@@ -42,13 +42,24 @@ export interface Plan {
   operations: PlanOperation[];
   riskLevel: "Low" | "Medium" | "High";
   estimatedCostNote?: string;
+  revisionCount?: number;
+  criticVerdict?: string;
   status?: "pending" | "approved" | "rejected";
+}
+
+export interface AgentCallItem {
+  agent: string;
+  model: string;
+  iteration: number;
+  done: boolean;
+  success?: boolean;
 }
 
 export interface ChatMessage {
   role: "user" | "agent";
   content: string;
   toolCalls?: ToolCall[];
+  agentCalls?: AgentCallItem[];
   plan?: Plan;
   isStreaming?: boolean;
 }
@@ -105,7 +116,9 @@ export interface AgentChatResponse {
 export type AgentStreamEvent =
   | { type: "tool_call"; data: { tool: string; session_id: string } }
   | { type: "tool_result"; data: { tool: string; success: boolean; session_id: string } }
-  | { type: "plan"; data: { plan_id: string; title: string; operations: PlanOperation[]; risk_level: string; estimated_cost_note?: string; session_id: string } }
+  | { type: "plan"; data: { plan_id: string; title: string; operations: PlanOperation[]; risk_level: string; estimated_cost_note?: string; revision_count?: number; session_id: string } }
   | { type: "reply"; data: { content: string; session_id: string } }
   | { type: "usage"; data: { input_tokens: number; output_tokens: number; session_id: string } }
-  | { type: "error"; data: { message: string; session_id: string } };
+  | { type: "error"; data: { message: string; session_id: string } }
+  | { type: "agent_call"; data: { agent: string; model: string; iteration: number; parent_tool_call_id?: string; session_id: string } }
+  | { type: "agent_result"; data: { agent: string; success: boolean; iteration: number; input_tokens: number; output_tokens: number; session_id: string } };

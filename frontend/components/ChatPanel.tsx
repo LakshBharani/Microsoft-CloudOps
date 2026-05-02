@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Wrench, CheckCircle2, XCircle, X } from "lucide-react";
+import { Send, Bot, User, Wrench, CheckCircle2, XCircle, X, ChevronDown, ChevronRight, Cpu } from "lucide-react";
 import { streamChat } from "@/lib/api";
-import type { ChatMessage, ToolCall, Plan, ResourceNode } from "@/lib/types";
+import type { ChatMessage, ToolCall, Plan, ResourceNode, AgentCallItem } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import PlanCard from "./PlanCard";
 
@@ -29,7 +29,59 @@ const TOOL_LABELS: Record<string, string> = {
   create_plan: "Creating plan",
   deploy_arm_template: "Deploying ARM template",
   apply_resource_mutation: "Applying resource mutation",
+  investigate_infrastructure: "Investigating infrastructure",
+  plan_deployment: "Planning deployment",
+  critique_plan: "Critiquing plan",
+  execute_plan: "Executing plan",
+  reflect_on_deployment: "Reflecting on deployment",
 };
+
+const AGENT_LABELS: Record<string, string> = {
+  investigate_infrastructure: "Investigator",
+  plan_deployment: "Planner",
+  critique_plan: "Critic",
+  execute_plan: "Executor",
+  reflect_on_deployment: "Reflector",
+};
+
+function AgentTimeline({ agentCalls }: { agentCalls: AgentCallItem[] }) {
+  const [open, setOpen] = useState(false);
+  if (agentCalls.length === 0) return null;
+
+  return (
+    <div className="mb-2 border border-slate-700 rounded overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-1.5 px-2 py-1 bg-slate-800/50 hover:bg-slate-800 text-[10px] text-slate-400 transition-colors"
+      >
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        <Cpu size={10} className="text-purple-400" />
+        <span>Agent timeline — {agentCalls.length} invocation{agentCalls.length !== 1 ? "s" : ""}</span>
+      </button>
+      {open && (
+        <div className="px-2 py-1.5 space-y-1 bg-slate-900/50">
+          {agentCalls.map((ac, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-[10px]">
+              {!ac.done ? (
+                <Cpu size={10} className="text-purple-400 animate-pulse flex-shrink-0" />
+              ) : ac.success === false ? (
+                <XCircle size={10} className="text-red-400 flex-shrink-0" />
+              ) : (
+                <CheckCircle2 size={10} className="text-purple-400 flex-shrink-0" />
+              )}
+              <span className="text-purple-300 font-medium">{AGENT_LABELS[ac.agent] ?? ac.agent}</span>
+              <span className="text-slate-600">·</span>
+              <span className="text-slate-500">{ac.model.replace("claude-", "").replace("-", " ")}</span>
+              {ac.iteration > 1 && (
+                <span className="text-amber-500 text-[9px]">#{ac.iteration}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ToolCallList({ toolCalls }: { toolCalls: ToolCall[] }) {
   if (toolCalls.length === 0) return null;
@@ -70,6 +122,9 @@ function AgentMessage({
         <Bot size={12} className="text-white" />
       </div>
       <div className="max-w-[85%] bg-[#1e293b] rounded-lg px-3 py-2 text-xs leading-relaxed text-slate-200 break-words min-w-0 overflow-hidden">
+        {msg.agentCalls && msg.agentCalls.length > 0 && (
+          <AgentTimeline agentCalls={msg.agentCalls} />
+        )}
         {msg.toolCalls && msg.toolCalls.length > 0 && (
           <ToolCallList toolCalls={msg.toolCalls} />
         )}
@@ -197,6 +252,36 @@ export default function ChatPanel({
             };
             return msgs;
           });
+        } else if (evt.type === "agent_call") {
+          onMessagesChange((prev: ChatMessage[]) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            const newCall: AgentCallItem = {
+              agent: evt.data.agent,
+              model: evt.data.model,
+              iteration: evt.data.iteration,
+              done: false,
+            };
+            msgs[msgs.length - 1] = {
+              ...last,
+              agentCalls: [...(last.agentCalls ?? []), newCall],
+            };
+            return msgs;
+          });
+        } else if (evt.type === "agent_result") {
+          onMessagesChange((prev: ChatMessage[]) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            msgs[msgs.length - 1] = {
+              ...last,
+              agentCalls: last.agentCalls?.map((ac) =>
+                ac.agent === evt.data.agent && ac.iteration === evt.data.iteration && !ac.done
+                  ? { ...ac, done: true, success: evt.data.success }
+                  : ac
+              ),
+            };
+            return msgs;
+          });
         } else if (evt.type === "plan") {
           onSessionIdSet(evt.data.session_id);
           const plan: Plan = {
@@ -205,6 +290,7 @@ export default function ChatPanel({
             operations: evt.data.operations,
             riskLevel: evt.data.risk_level as Plan["riskLevel"],
             estimatedCostNote: evt.data.estimated_cost_note,
+            revisionCount: evt.data.revision_count,
             status: "pending",
           };
           onMessagesChange((prev: ChatMessage[]) => {
@@ -310,6 +396,36 @@ export default function ChatPanel({
                 tc.tool === evt.data.tool && !tc.done
                   ? { ...tc, done: true, success: evt.data.success }
                   : tc
+              ),
+            };
+            return msgs;
+          });
+        } else if (evt.type === "agent_call") {
+          onMessagesChange((prev) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            const newCall: AgentCallItem = {
+              agent: evt.data.agent,
+              model: evt.data.model,
+              iteration: evt.data.iteration,
+              done: false,
+            };
+            msgs[msgs.length - 1] = {
+              ...last,
+              agentCalls: [...(last.agentCalls ?? []), newCall],
+            };
+            return msgs;
+          });
+        } else if (evt.type === "agent_result") {
+          onMessagesChange((prev) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            msgs[msgs.length - 1] = {
+              ...last,
+              agentCalls: last.agentCalls?.map((ac) =>
+                ac.agent === evt.data.agent && ac.iteration === evt.data.iteration && !ac.done
+                  ? { ...ac, done: true, success: evt.data.success }
+                  : ac
               ),
             };
             return msgs;
