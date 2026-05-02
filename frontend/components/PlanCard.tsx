@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, RefreshCw } from "lucide-react";
 import { approvePlan, rejectPlan } from "@/lib/api";
 import type { Plan, PlanOperation } from "@/lib/types";
 
@@ -54,12 +54,20 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
     <div className="mt-2 rounded-lg border border-slate-600 bg-[#0f1117] overflow-hidden text-xs">
       <div className="px-3 py-2 bg-slate-800 border-b border-slate-600">
         <div className="font-semibold text-slate-200">{plan.title}</div>
-        <div className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-          plan.riskLevel === "High" ? "bg-red-950 border-red-700 text-red-400" :
-          plan.riskLevel === "Medium" ? "bg-amber-950 border-amber-700 text-amber-400" :
-          "bg-green-950 border-green-700 text-green-400"
-        }`}>
-          {plan.riskLevel} Risk
+        <div className="flex items-center gap-2 mt-1 flex-wrap">
+          <div className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+            plan.riskLevel === "High" ? "bg-red-950 border-red-700 text-red-400" :
+            plan.riskLevel === "Medium" ? "bg-amber-950 border-amber-700 text-amber-400" :
+            "bg-green-950 border-green-700 text-green-400"
+          }`}>
+            {plan.riskLevel} Risk
+          </div>
+          {(plan.revisionCount ?? 0) > 0 && (
+            <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-purple-950 border-purple-700 text-purple-300">
+              <RefreshCw size={9} />
+              Critic: {plan.revisionCount} revision{plan.revisionCount === 1 ? "" : "s"}
+            </div>
+          )}
         </div>
       </div>
 

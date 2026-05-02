@@ -1,17 +1,18 @@
 using System.Text.Json.Serialization;
+using Anthropic;
 using DotNetEnv;
 using Azure.Identity;
 using Azure.Core;
 using Azure.ResourceManager;
 using InfraMapper.Services;
 using InfraMapper.Services.Agent;
+using InfraMapper.Services.Agent.Memory;
+using InfraMapper.Services.Agent.SubAgents;
 
 Env.TraversePath().Load();
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<AzureResourceService>();
 builder.Services.AddSingleton<DiffService>();
@@ -21,12 +22,10 @@ builder.Services.AddSingleton<TokenCredential>(_ =>
 {
     var options = new DefaultAzureCredentialOptions
     {
-        // Local dev: these frequently fail/noise on macOS, and managed identity probes can add delay.
         ExcludeManagedIdentityCredential = builder.Environment.IsDevelopment(),
         ExcludeVisualStudioCredential = true,
         ExcludeVisualStudioCodeCredential = true
     };
-
     return new DefaultAzureCredential(options);
 });
 
@@ -44,16 +43,17 @@ var anthropicApiKey = builder.Configuration["Anthropic:ApiKey"]
     ?? throw new InvalidOperationException(
         "Anthropic API key not configured. Set Anthropic:ApiKey in config or ANTHROPIC_API_KEY env var.");
 
-builder.Services.AddHttpClient("anthropic", client =>
-{
-    client.BaseAddress = new Uri("https://api.anthropic.com/");
-    client.DefaultRequestHeaders.Add("x-api-key", anthropicApiKey);
-    client.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
-});
+// Register IAnthropicClient (Microsoft.Agents.AI.Anthropic connector).
+builder.Services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient { ApiKey = anthropicApiKey });
 
-builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<PlanStore>();
-builder.Services.AddSingleton<AgentTools>();
+builder.Services.AddSingleton<ILessonsStore, JsonFileLessonsStore>();
+builder.Services.AddSingleton<InvestigatorAgent>();
+builder.Services.AddSingleton<PlannerAgent>();
+builder.Services.AddSingleton<CriticAgent>();
+builder.Services.AddSingleton<ExecutorAgent>();
+builder.Services.AddSingleton<ReflectorAgent>();
+builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<AgentService>();
 builder.Services.AddHostedService<SessionEvictionService>();
 
@@ -64,11 +64,8 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
-{
     app.MapOpenApi();
-}
 
 app.UseCors();
 app.UseHttpsRedirection();
@@ -82,12 +79,10 @@ var summaries = new[]
 app.MapGet("/weatherforecast", () =>
 {
     var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
+        new WeatherForecast(
             DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
             Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
+            summaries[Random.Shared.Next(summaries.Length)]))
         .ToArray();
     return forecast;
 })
