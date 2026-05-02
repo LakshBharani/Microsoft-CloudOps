@@ -1,0 +1,25 @@
+# Build output
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+.vs/
+
+# Environment / secrets
+appsettings.Development.json
+*.env
+.env
+
+# macOS
+.DS_Store
+
+# Rider / JetBrains
+.idea/
+
+# VS Code
+.vscode/
+
+# Claude Code local overrides
+.claude/

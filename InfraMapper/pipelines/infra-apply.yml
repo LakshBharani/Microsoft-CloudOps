@@ -1,0 +1,52 @@
+# Triggers when desired-state.json is merged to main.
+# Diffs vs live Azure and applies changes via the InfraMapper agent.
+# The PR approval serves as the human gate — changes execute automatically on merge.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/desired-state.json
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - script: |
+      set -e
+      echo "Applying infrastructure changes from desired-state.json..."
+
+      RESPONSE=$(curl -s -o /tmp/execute_response.json -w "%{http_code}" -X POST \
+        "$(INFRA_API_URL)/api/devops/execute?subscriptionId=$(AZURE_SUBSCRIPTION_ID)&orgUrl=$(System.TeamFoundationCollectionUri)&project=$(System.TeamProject)&repository=$(Build.Repository.Name)&pat=$(ADO_PAT)&branch=main&filePath=infra/desired-state.json")
+
+      echo "HTTP status: $RESPONSE"
+      cat /tmp/execute_response.json
+      echo ""
+
+      # Extract fields
+      SUCCEEDED=$(cat /tmp/execute_response.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('succeeded', d.get('skipped', False)))")
+      REPLY=$(cat /tmp/execute_response.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('reply') or d.get('reason', ''))")
+
+      echo "Result: $SUCCEEDED"
+      echo "Reply: $REPLY"
+
+      if [ "$RESPONSE" != "200" ]; then
+        echo "##vso[task.logissue type=error]Execute request failed with HTTP $RESPONSE"
+        exit 1
+      fi
+
+      if [ "$SUCCEEDED" = "False" ]; then
+        echo "##vso[task.logissue type=error]Infrastructure apply failed: $REPLY"
+        exit 1
+      fi
+
+      echo "##vso[task.complete result=Succeeded]$REPLY"
+    displayName: Apply infrastructure changes via InfraMapper Agent
+    env:
+      INFRA_API_URL: $(INFRA_API_URL)
+      AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+      ADO_PAT: $(ADO_PAT)
