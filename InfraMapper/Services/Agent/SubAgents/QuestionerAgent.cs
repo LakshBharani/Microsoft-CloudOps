@@ -43,7 +43,7 @@ public sealed class QuestionerAgent
             Description =
                 "Ask the user a targeted clarification question when planning is blocked by ambiguity " +
                 "or critic feedback requires a human choice. Returns question JSON for the UI.",
-            InputSchema = """{"type":"object","properties":{"context":{"type":"string","description":"Why a user choice is needed"},"recommended_default":{"type":"string","description":"Recommended default choice if known"},"category":{"type":"string","description":"general, scope_confirmation, scope_exclusions, or business_reason"},"confirmation_scope":{"type":"string","description":"Destructive or preference scope this answer applies to, if any"},"originating_agent":{"type":"string","description":"Agent that needs the answer"}},"required":["context"]}""",
+            InputSchema = """{"type":"object","properties":{"context":{"type":"string","description":"Why a user choice is needed"},"recommended_default":{"type":"string","description":"Recommended default choice if known"},"category":{"type":"string","description":"general, name_correction, scope_confirmation, scope_exclusions, or business_reason"},"confirmation_scope":{"type":"string","description":"Destructive or preference scope this answer applies to, if any"},"originating_agent":{"type":"string","description":"Agent that needs the answer"}},"required":["context"]}""",
             Invoke = async (argsJson, ct) =>
             {
                 var message = BuildUserMessage(argsJson, originatingAgent);
@@ -91,6 +91,7 @@ public sealed class QuestionerAgent
         - scope_confirmation for destructive intent or safety confirmation.
         - scope_exclusions for exclusions, resources to keep, or boundaries.
         - business_reason for why a destructive action is intended.
+        - name_correction when Azure naming rules make a requested resource name invalid.
         - general for all other clarifications.
         Pass confirmation_scope when the answer should apply to a destructive scope.
         Pass originating_agent exactly as provided in the user message.

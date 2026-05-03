@@ -54,5 +54,92 @@
     ],
     "whatFailed": "Storage account name auto-corrected from \u0022teststorageeastusa-01\u0022 to \u0022teststorageeastusa01\u0022; hyphens were stripped during provisioning",
     "recommendation": "Storage account names must be lowercase alphanumeric only, maximum 24 characters; hyphens, underscores, and other special characters are not allowed. Validate storage account names against this pattern before template submission to avoid auto-correction and maintain predictable resource naming."
+  },
+  {
+    "id": "8d8f9431-e676-4172-a512-a574864397c9",
+    "timestamp": "2026-05-03T07:12:54.611412+00:00",
+    "intentSummary": "Deploy Azure Container Registry (Standard SKU) with resource group in East US region for Contoso Retail Platform test environment",
+    "appliesTo": [
+      "Microsoft.ContainerRegistry/registries",
+      "Microsoft.Resources/resourceGroups"
+    ],
+    "whatFailed": null,
+    "recommendation": "ACR names are automatically sanitized to lowercase alphanumeric (hyphens removed); plan naming with this transformation in mind. Always disable admin user on ACR and enforce managed identity or Azure AD authentication for all image push/pull operations. Tag resource groups with environment and project metadata for cost tracking and lifecycle management."
+  },
+  {
+    "id": "8682b69f-bba8-4b31-8a0b-4ae3d8612c4b",
+    "timestamp": "2026-05-03T07:42:44.277715+00:00",
+    "intentSummary": "Deploy multi-resource application infrastructure (resource group, storage account, App Service Plan, Log Analytics, web app) to eastus",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.OperationalInsights/workspaces",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "For subscription-scoped multi-resource deployments: (1) use nested ARM deployments with Microsoft.Resources/deployments, expressionEvaluationOptions.scope=inner, and explicit resourceGroup parameter; (2) create resource group first in outer deployment, then all child resources in inner nested deployment; (3) declare explicit dependsOn on App Service Plan in web app configuration (serverFarmId reference alone does not create ARM ordering); (4) storage account names must be strictly lowercase alphanumeric without hyphens, max 24 chars; (5) use API version 2023-01-01 or later for Web/serverfarms and Web/sites to ensure correct S1 tier/capacity schema; (6) apply consistent security baseline across all resources: HTTPS-only, TLS 1.2 minimum, disable public blob access and FTP."
+  },
+  {
+    "id": "5b532df3-8ad6-4f53-8419-a2fc1d7b68ae",
+    "timestamp": "2026-05-03T08:00:54.417096+00:00",
+    "intentSummary": "Delete resource group \u0027my-app-rg\u0027 and all 5 contained resources in correct dependency order",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Web/sites",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.OperationalInsights/workspaces"
+    ],
+    "whatFailed": null,
+    "recommendation": "Resource group deletions succeed when dependency order is respected (delete dependent resources before parents) and prerequisites are met. Always confirm with users that backups are in place and obtain team approval before executing irreversible deletions. Note that Log Analytics Workspaces enter a 14-day soft-delete retention window\u2014document this window for team visibility and recovery procedures in case rollback becomes necessary."
+  },
+  {
+    "id": "634c77b4-4db0-4fb2-866e-4d211b364359",
+    "timestamp": "2026-05-03T08:06:35.290555+00:00",
+    "intentSummary": "Deploy app infrastructure (App Service Plan, Web App, Storage Account, Log Analytics Workspace) to eastus for development/testing",
+    "appliesTo": [
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.OperationalInsights/workspaces",
+      "Microsoft.Resources/resourceGroups"
+    ],
+    "whatFailed": null,
+    "recommendation": "Storage account naming must follow Azure constraints (lowercase alphanumeric, max 24 characters, no hyphens). Validate and confirm naming corrections with the user before deployment to prevent resource naming drift. F1 Free tier App Service Plans are cost-effective for development/testing but lack SLA, custom domain support, and always-on features\u2014use Standard or Premium tiers for production workloads."
+  },
+  {
+    "id": "a2ae3261-1307-46e7-b11d-166364398b17",
+    "timestamp": "2026-05-03T08:06:35.295703+00:00",
+    "intentSummary": "Apply security baseline configurations to Web App and Storage Account",
+    "appliesTo": [
+      "Microsoft.Web/sites",
+      "Microsoft.Storage/storageAccounts"
+    ],
+    "whatFailed": null,
+    "recommendation": "Enforce HTTPS-only mode and TLS 1.2 minimum on all Web Apps and Storage Accounts as a default security policy. Disable public blob access on storage accounts unless explicitly required for the workload. Apply these configurations during initial resource provisioning rather than as post-deployment remediation."
+  },
+  {
+    "id": "24440973-8188-40b0-b3cf-58f93d3d66f9",
+    "timestamp": "2026-05-03T08:06:35.29717+00:00",
+    "intentSummary": "Deploy Log Analytics Workspace with retention policy for application logging",
+    "appliesTo": [
+      "Microsoft.OperationalInsights/workspaces"
+    ],
+    "whatFailed": null,
+    "recommendation": "Document the Log Analytics soft-delete retention window (14-day recovery period) in deployment runbooks. Configure appropriate retention policies at provisioning time based on compliance and cost requirements. The PerGB2018 SKU is suitable for development; consider capacity reservation SKUs for production workloads with predictable log volumes."
+  },
+  {
+    "id": "8a867ff7-e5ce-452b-9a2d-2afae644827e",
+    "timestamp": "2026-05-03T08:06:35.297929+00:00",
+    "intentSummary": "Execute multi-resource deployment with proper dependency sequencing",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.OperationalInsights/workspaces",
+      "Microsoft.Storage/storageAccounts"
+    ],
+    "whatFailed": null,
+    "recommendation": "For nested ARM deployments with subscription-scoped resource group creation, set expressionEvaluationOptions.scope=inner to enable proper resource evaluation. Sequence deployment as: (1) resource group creation, (2) parallel creation of independent resources (Log Analytics, Storage, App Service Plan), (3) dependent resources (Web App after App Service Plan). This approach reduces deployment time and prevents blocking dependencies."
   }
 ]

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { RefreshCw, Network, AlertCircle, GitCompare } from "lucide-react";
 import { fetchGraph, diffInfra } from "@/lib/api";
@@ -14,6 +14,14 @@ import DevOpsSettings, { type DevOpsConfig } from "@/components/DevOpsSettings";
 const InfraGraph = dynamic(() => import("@/components/InfraGraph"), { ssr: false });
 
 const DEFAULT_SUB = process.env.NEXT_PUBLIC_SUBSCRIPTION_ID ?? "";
+const DEFAULT_DEVOPS_CONFIG: DevOpsConfig = {
+  orgUrl: "",
+  project: "",
+  repository: "",
+  pat: "",
+  branch: "main",
+  filePath: "infra/desired-state.json"
+};
 
 function makeSession(n: number): Session {
   return { id: crypto.randomUUID(), name: `Session ${n}`, createdAt: Date.now() };
@@ -31,13 +39,17 @@ export default function Home() {
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [diffStatus, setDiffStatus] = useState<Record<string, "create" | "update" | "delete">>({});
-  const [devOpsConfig, setDevOpsConfig] = useState<DevOpsConfig>(() => {
-    try {
-      const stored = localStorage.getItem("devops_config");
-      if (stored) return JSON.parse(stored);
-    } catch {}
-    return { orgUrl: "", project: "", repository: "", pat: "", branch: "main", filePath: "infra/desired-state.json" };
-  });
+  const [devOpsConfig, setDevOpsConfig] = useState<DevOpsConfig>(DEFAULT_DEVOPS_CONFIG);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      try {
+        const stored = localStorage.getItem("devops_config");
+        if (stored) setDevOpsConfig(JSON.parse(stored));
+      } catch {}
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, []);
 
   function handleDevOpsConfigChange(cfg: DevOpsConfig) {
     setDevOpsConfig(cfg);
@@ -201,7 +213,7 @@ export default function Home() {
             {loading ? "Loading…" : "Load"}
           </button>
           <button
-            onClick={() => { setShowDiff((s) => !s); setDiffResult(null); setDiffStatus({}); }}
+            onClick={() => setShowDiff((s) => !s)}
             className={`flex items-center gap-1.5 text-xs px-3 py-1 rounded transition-colors border ${
               showDiff
                 ? "bg-blue-700 border-blue-500 text-white"
@@ -220,33 +232,34 @@ export default function Home() {
       </header>
 
       {/* Main area */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Graph */}
-        <div className="flex-1 relative">
-          {error && (
-            <div className="absolute inset-x-4 top-4 z-10 flex items-center gap-2 bg-red-950 border border-red-800 text-red-300 text-xs px-3 py-2 rounded">
-              <AlertCircle size={14} />
-              {error}
-            </div>
-          )}
-          {!graph && !loading && (
-            <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
-              Enter a subscription ID and click Load
-            </div>
-          )}
-          {graph && (
-            <InfraGraph graph={graph} onNodeClick={handleNodeClick} diffStatus={diffStatus} />
-          )}
-        </div>
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* Left workspace */}
+        <div className="min-h-0 min-w-0 flex-1 flex overflow-hidden">
+          {/* Graph */}
+          <div className="flex-1 min-w-0 relative">
+            {error && (
+              <div className="absolute inset-x-4 top-4 z-20 flex items-center gap-2 bg-red-950 border border-red-800 text-red-300 text-xs px-3 py-2 rounded">
+                <AlertCircle size={14} />
+                {error}
+              </div>
+            )}
+            {!graph && !loading && (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
+                Enter a subscription ID and click Load
+              </div>
+            )}
+            {graph && (
+              <InfraGraph graph={graph} onNodeClick={handleNodeClick} diffStatus={diffStatus} />
+            )}
+          </div>
 
-        {/* Diff panel */}
-        {showDiff && (
-          <div className="w-80 flex-shrink-0 flex flex-col border-l border-slate-700">
+          {/* Diff panel */}
+          <div className={`${showDiff ? "w-80" : "hidden w-0"} min-h-0 flex-shrink-0 flex flex-col overflow-hidden border-l border-slate-700`}>
             <DiffPanel
               subscriptionId={subscriptionId}
               onDiff={handleRunDiff}
               onApply={handleApplyDiff}
-              onClose={() => { setShowDiff(false); setDiffResult(null); setDiffStatus({}); }}
+              onClose={() => setShowDiff(false)}
               onOpenSettings={() => setShowDevOpsSettings(true)}
               result={diffResult}
               loading={diffLoading}
@@ -254,15 +267,15 @@ export default function Home() {
               devOpsConfig={devOpsConfig}
             />
           </div>
-        )}
 
-        {/* Resource detail panel */}
-        {selectedNode && !showDiff && (
-          <ResourcePanel node={selectedNode} onClose={() => setSelectedNode(null)} />
-        )}
+          {/* Resource detail panel */}
+          {selectedNode && !showDiff && (
+            <ResourcePanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+          )}
+        </div>
 
         {/* Chat panel */}
-        <div className="min-w-[620px] w-[44vw] max-w-[860px] flex-shrink-0 flex flex-col border-l border-slate-700">
+        <div className="min-w-[620px] w-[44vw] max-w-[860px] min-h-0 flex-shrink-0 flex flex-col border-l border-slate-700">
           <SessionTabs
             sessions={sessions}
             activeId={activeSessionId}
@@ -271,21 +284,23 @@ export default function Home() {
             onDelete={handleDeleteSession}
             onRename={handleRenameSession}
           />
-          <ChatPanel
-            key={activeSessionId}
-            sessionId={activeAgentSessionId}
-            subscriptionId={subscriptionId}
-            messages={activeMessages}
-            onMessagesChange={handleMessagesChange}
-            onSessionIdSet={handleSessionIdSet}
-            onDeploymentComplete={() => loadGraph(subscriptionId)}
-            tokenUsage={activeTokenUsage}
-            onTokenUsage={handleTokenUsage}
-            contextNodes={contextNodes}
-            onRemoveContext={handleRemoveContext}
-            syntheticPrompt={syntheticPrompt}
-            onSyntheticPromptConsumed={() => setSyntheticPrompt(null)}
-          />
+          <div className="min-h-0 flex-1">
+            <ChatPanel
+              key={activeSessionId}
+              sessionId={activeAgentSessionId}
+              subscriptionId={subscriptionId}
+              messages={activeMessages}
+              onMessagesChange={handleMessagesChange}
+              onSessionIdSet={handleSessionIdSet}
+              onDeploymentComplete={() => loadGraph(subscriptionId)}
+              tokenUsage={activeTokenUsage}
+              onTokenUsage={handleTokenUsage}
+              contextNodes={contextNodes}
+              onRemoveContext={handleRemoveContext}
+              syntheticPrompt={syntheticPrompt}
+              onSyntheticPromptConsumed={() => setSyntheticPrompt(null)}
+            />
+          </div>
         </div>
       </div>
 

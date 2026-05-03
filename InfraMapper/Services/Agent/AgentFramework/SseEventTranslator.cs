@@ -250,12 +250,8 @@ public sealed class SseEventTranslator
 
         if (approved == false)
         {
-            // Critic rejected: still emit the plan so the UI can show what failed and why.
-            if (_bufferedPlanResultJson is not null)
-            {
-                foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount, "rejected", feedback))
-                    yield return evt;
-            }
+            // Critic rejected: discard the buffered plan. The activity stream still carries
+            // the critic result, but rejected plans should not be shown as approvable plans.
             _bufferedPlanResultJson = null;
             _planRevisionCount++;
             yield break;

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using InfraMapper.Services.Agent.Memory;
 
 namespace InfraMapper.Services.Agent.Tools;
@@ -14,12 +15,18 @@ public sealed class PlannerTools
     private readonly PlanStore _planStore;
     private readonly ILessonsStore _lessonsStore;
     private readonly string _sessionId;
+    private string _currentIntent = "";
 
     public PlannerTools(PlanStore planStore, ILessonsStore lessonsStore, string sessionId)
     {
         _planStore = planStore;
         _lessonsStore = lessonsStore;
         _sessionId = sessionId;
+    }
+
+    public void BeginPlan(string intent)
+    {
+        _currentIntent = intent;
     }
 
     /// <summary>
@@ -66,6 +73,10 @@ public sealed class PlannerTools
         [Description("Risk level: Low, Medium, or High")] string riskLevel = "Medium",
         [Description("Optional human-readable cost estimate")] string? estimatedCostNote = null)
     {
+        var validationError = ValidateUserNamedResources(operations);
+        if (validationError is not null)
+            return validationError;
+
         var planDataEl = JsonSerializer.SerializeToElement(
             new { title, operations, risk_level = riskLevel, estimated_cost_note = estimatedCostNote },
             OrchestratorTools.SnakeCaseOpts);
@@ -81,5 +92,111 @@ public sealed class PlannerTools
             risk_level = riskLevel,
             estimated_cost_note = estimatedCostNote,
         }, OrchestratorTools.SnakeCaseOpts);
+    }
+
+    private string? ValidateUserNamedResources(PlanOperationDto[] operations)
+    {
+        var requestedStorageNames = ExtractRequestedStorageAccountNames(_currentIntent);
+        if (requestedStorageNames.Count == 0)
+            return null;
+
+        foreach (var requestedName in requestedStorageNames)
+        {
+            if (!IsValidStorageAccountName(requestedName))
+                return RequiresNameChoice(
+                    requestedName,
+                    $"Storage account name '{requestedName}' is invalid. Azure storage account names must be 3-24 characters and use only lowercase letters and numbers; hyphens are not allowed.");
+        }
+
+        var requestedSet = requestedStorageNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var plannedStorageNames = operations
+            .Where(IsStorageAccountOperation)
+            .Select(o => o.ResourceName)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var inventedNames = plannedStorageNames
+            .Where(name => !requestedSet.Contains(name))
+            .ToArray();
+
+        if (inventedNames.Length > 0)
+            return RequiresNameChoice(
+                inventedNames[0],
+                $"The plan changed the user-supplied storage account name instead of asking for confirmation. User requested: {string.Join(", ", requestedStorageNames)}. Planned: {string.Join(", ", plannedStorageNames)}. Ask the user to choose a valid replacement name before creating the plan.");
+
+        return null;
+    }
+
+    private static bool IsStorageAccountOperation(PlanOperationDto operation) =>
+        string.Equals(operation.ResourceType, "Microsoft.Storage/storageAccounts", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(operation.Action, "Delete", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsValidStorageAccountName(string name) =>
+        Regex.IsMatch(name, "^[a-z0-9]{3,24}$", RegexOptions.CultureInvariant);
+
+    private static string RequiresNameChoice(string invalidName, string message) =>
+        JsonSerializer.Serialize(new
+        {
+            error = true,
+            error_type = "requires_user_choice",
+            category = "name_correction",
+            resource_type = "Microsoft.Storage/storageAccounts",
+            invalid_name = invalidName,
+            message,
+            prompt = "Choose a valid Azure storage account name.",
+            options = new[]
+            {
+                new
+                {
+                    label = "Enter new name",
+                    value = "custom_name",
+                    description = "Provide a 3-24 character lowercase alphanumeric storage account name."
+                },
+                new
+                {
+                    label = "Cancel storage account",
+                    value = "cancel_resource",
+                    description = "Do not create this storage account."
+                }
+            },
+            allow_custom = true,
+            suggestion = "Call ask_clarifying_question. Do not invent a replacement name."
+        }, OrchestratorTools.SnakeCaseOpts);
+
+    private static IReadOnlyList<string> ExtractRequestedStorageAccountNames(string intent)
+    {
+        if (string.IsNullOrWhiteSpace(intent))
+            return Array.Empty<string>();
+
+        var names = new List<string>();
+        AddMatches(names, Regex.Matches(
+            intent,
+            @"\b(?:Create|Update|Deploy)\s+Microsoft\.Storage/storageAccounts\s+""([^""]+)""",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+
+        AddMatches(names, Regex.Matches(
+            intent,
+            @"""(?:type|resource_type)""\s*:\s*""Microsoft\.Storage/storageAccounts""[\s\S]{0,500}?""(?:name|resource_name)""\s*:\s*""([^""]+)""",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+
+        AddMatches(names, Regex.Matches(
+            intent,
+            @"""(?:name|resource_name)""\s*:\s*""([^""]+)""[\s\S]{0,500}?""(?:type|resource_type)""\s*:\s*""Microsoft\.Storage/storageAccounts""",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+
+        return names
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void AddMatches(List<string> names, MatchCollection matches)
+    {
+        foreach (Match match in matches)
+        {
+            if (match.Groups.Count > 1)
+                names.Add(match.Groups[1].Value);
+        }
     }
 }

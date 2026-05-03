@@ -29,7 +29,7 @@ export default function SessionTabs({ sessions, activeId, onSelect, onNew, onDel
   }
 
   return (
-    <div className="flex min-h-10 items-center gap-1 overflow-x-auto border-b border-slate-700 bg-[#101621] px-2">
+    <div className="sticky top-0 z-20 flex h-10 flex-shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-slate-700 bg-[#101621] px-2">
       {sessions.map((session) => {
         const active = session.id === activeId;
         return (
@@ -37,7 +37,7 @@ export default function SessionTabs({ sessions, activeId, onSelect, onNew, onDel
             key={session.id}
             onClick={() => onSelect(session.id)}
             onDoubleClick={() => beginRename(session)}
-            className={`group flex max-w-44 items-center gap-2 rounded-t px-3 py-2 text-xs transition-colors ${
+            className={`group flex h-full max-w-44 flex-shrink-0 items-center gap-2 rounded-t px-3 py-2 text-xs transition-colors ${
               active ? "bg-[#161b27] text-slate-100" : "text-slate-500 hover:bg-slate-900 hover:text-slate-300"
             }`}
             title={session.name}

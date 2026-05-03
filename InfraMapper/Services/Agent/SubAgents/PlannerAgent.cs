@@ -50,7 +50,8 @@ public sealed class PlannerAgent
             InputSchema = """{"type":"object","properties":{"intent":{"type":"string","description":"What the user wants to deploy or change"},"investigator_summary":{"type":"string","description":"Optional summary from the investigator agent"}},"required":["intent"]}""",
             Invoke = async (argsJson, ct) =>
             {
-                var message = BuildUserMessage(argsJson);
+                var (message, intent) = BuildUserMessage(argsJson);
+                tools.BeginPlan(intent);
                 return await agent.RunAsync(message, ct);
             }
         };
@@ -58,9 +59,9 @@ public sealed class PlannerAgent
         return (agent, function);
     }
 
-    private static string BuildUserMessage(string? argsJson)
+    private static (string Message, string Intent) BuildUserMessage(string? argsJson)
     {
-        if (string.IsNullOrWhiteSpace(argsJson)) return "Plan the deployment.";
+        if (string.IsNullOrWhiteSpace(argsJson)) return ("Plan the deployment.", "");
         try
         {
             using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
@@ -70,9 +71,9 @@ public sealed class PlannerAgent
             var msg = $"Plan deployment: {intent ?? "as described"}";
             if (!string.IsNullOrWhiteSpace(summary))
                 msg += $"\n\nInvestigator summary:\n{summary}";
-            return msg;
+            return (msg, intent ?? "");
         }
-        catch { return "Plan the deployment."; }
+        catch { return ("Plan the deployment.", ""); }
     }
 
     // ─── Internal tool wiring ────────────────────────────────────────────────
@@ -148,6 +149,13 @@ public sealed class PlannerAgent
           • If a human choice is required, call ask_clarifying_question and then output ONLY
             its raw JSON result. Do not continue planning until the user answers.
           • Do NOT ask user-facing questions in prose.
+          • Treat user-supplied resource names as hard constraints. Do NOT invent replacement
+            names for resources named by the user. If a supplied name is invalid for Azure
+            (for example storage accounts allow only 3-24 lowercase letters and numbers),
+            call ask_clarifying_question to ask for a valid replacement.
+          • If create_plan returns error_type:"requires_user_choice", immediately call
+            ask_clarifying_question using the returned message and options. Do not retry with
+            generated names.
           • Include prior clarification evidence in destructive operation details so Critic can
             verify scope-level confirmation without asking again.
           • Never skip steps or collapse them into one.
