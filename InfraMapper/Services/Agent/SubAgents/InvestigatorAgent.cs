@@ -1,8 +1,6 @@
 using Anthropic;
-using InfraMapper.Services;
+using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.Tools;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
@@ -16,12 +14,12 @@ namespace InfraMapper.Services.Agent.SubAgents;
 /// </summary>
 public sealed class InvestigatorAgent
 {
-    private readonly IAnthropicClient _client;
+    private readonly AnthropicClient _client;
     private readonly AzureResourceService _resourceService;
     private readonly IArmGenericResourceService _genericResources;
 
     public InvestigatorAgent(
-        IAnthropicClient client,
+        AnthropicClient client,
         AzureResourceService resourceService,
         IArmGenericResourceService genericResources)
     {
@@ -30,40 +28,62 @@ public sealed class InvestigatorAgent
         _genericResources = genericResources;
     }
 
-    /// <summary>Builds the InvestigatorAgent and its "investigate_infrastructure" AIFunction.</summary>
-    public (AIAgent Agent, AIFunction Function) Build()
+    /// <summary>Builds the InvestigatorAgent and its "investigate_infrastructure" AgentTool.</summary>
+    public (AnthropicAgent Agent, AgentTool Function) Build()
     {
         var tools = new InvestigatorTools(_resourceService, _genericResources);
-        var aiTools = BuildAiTools(tools);
+        var agentTools = BuildAgentTools(tools);
 
-        var agent = _client.AsAIAgent(
-            model: AgentRegistry.GetModel("investigator"),
-            instructions: SystemPrompt,
-            name: "InfraMapperInvestigator",
-            description: "Discovers and summarizes Azure resources relevant to a given focus area.",
-            tools: aiTools);
+        var agent = new AnthropicAgent(
+            _client,
+            AgentRegistry.GetModel("investigator"),
+            SystemPrompt,
+            agentTools);
 
-        var function = agent.AsAIFunction(new AIFunctionFactoryOptions
+        var function = new AgentTool
         {
             Name = "investigate_infrastructure",
             Description =
                 "Investigate Azure infrastructure for a given focus area (e.g. 'storage accounts', 'VMs in westus2'). " +
                 "Returns a structured summary of existing resources and their dependencies relevant to the focus. " +
                 "Call this before plan_deployment to understand what already exists.",
-        });
+            InputSchema = """{"type":"object","properties":{"focus":{"type":"string","description":"The infrastructure focus area to investigate"},"subscription_id":{"type":"string","description":"Optional subscription ID override"}},"required":["focus"]}""",
+            Invoke = async (argsJson, ct) =>
+            {
+                var message = BuildUserMessage(argsJson);
+                return await agent.RunAsync(message, ct);
+            }
+        };
 
         return (agent, function);
     }
 
-    private static IList<AITool> BuildAiTools(InvestigatorTools tools)
+    private static string BuildUserMessage(string? argsJson)
     {
-        var opts = OrchestratorTools.SnakeCaseOpts;
+        if (string.IsNullOrWhiteSpace(argsJson)) return "Investigate the infrastructure.";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
+            var root = doc.RootElement;
+            var focus = root.TryGetProperty("focus", out var f) ? f.GetString() : null;
+            var subId = root.TryGetProperty("subscription_id", out var s) ? s.GetString() : null;
+            var msg = $"Investigate infrastructure for: {focus ?? "general overview"}";
+            if (!string.IsNullOrWhiteSpace(subId)) msg += $". Subscription: {subId}";
+            return msg;
+        }
+        catch { return "Investigate the infrastructure."; }
+    }
+
+    private static IList<AgentTool> BuildAgentTools(InvestigatorTools tools)
+    {
         return
         [
-            AIFunctionFactory.Create(tools.GetInfrastructureGraphAsync,
-                new AIFunctionFactoryOptions { Name = "get_infrastructure_graph", SerializerOptions = opts }),
-            AIFunctionFactory.Create(tools.GetResourceAsync,
-                new AIFunctionFactoryOptions { Name = "get_resource", SerializerOptions = opts }),
+            AgentToolFactory.Create(tools.GetInfrastructureGraphAsync,
+                "get_infrastructure_graph",
+                "Get the full Azure infrastructure graph for a subscription."),
+            AgentToolFactory.Create(tools.GetResourceAsync,
+                "get_resource",
+                "Get details of a specific Azure resource by ARM ID."),
         ];
     }
 
@@ -86,5 +106,6 @@ public sealed class InvestigatorAgent
         • Keep the summary concise — the Planner will use it, so signal what matters, not raw JSON.
         • If a query returns a transient error, retry once before reporting failure.
         • Your final response is the investigation summary text. No raw JSON in the final response.
+        • Do NOT use emojis.
         """;
 }

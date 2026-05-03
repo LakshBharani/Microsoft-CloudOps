@@ -20,6 +20,7 @@ public sealed class ExecutorTools
     private readonly IArmGenericResourceService _genericResources;
     private readonly PlanStore _planStore;
     private readonly string _sessionId;
+    private readonly string _subscriptionId;
 
     public ExecutorTools(
         IArmDeploymentService deploymentService,
@@ -27,7 +28,8 @@ public sealed class ExecutorTools
         IResourceMutationApprovalService mutationApprovals,
         IArmGenericResourceService genericResources,
         PlanStore planStore,
-        string sessionId)
+        string sessionId,
+        string subscriptionId)
     {
         _deploymentService = deploymentService;
         _approvalService = approvalService;
@@ -35,13 +37,14 @@ public sealed class ExecutorTools
         _genericResources = genericResources;
         _planStore = planStore;
         _sessionId = sessionId;
+        _subscriptionId = subscriptionId;
     }
 
     [Description("Deploy an ARM template to Azure. Requires an approved plan_id. " +
                  "Returns success:true on completion, or needs_replan:true if the template is invalid.")]
     public async Task<string> DeployArmTemplateAsync(
         [Description("Approved plan_id from plan_deployment")] string planId,
-        [Description("Azure subscription ID")] string subscriptionId,
+        [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscriptionId,
         [Description("Deployment name")] string deploymentName,
         [Description("Full ARM template as a JSON string")] string templateJson,
         [Description("ARM parameters JSON string (optional)")] string? parametersJson = null,
@@ -55,7 +58,7 @@ public sealed class ExecutorTools
 
         var manifest = new DeploymentManifestRequest
         {
-            SubscriptionId = subscriptionId,
+            SubscriptionId = _subscriptionId,
             DeploymentName = deploymentName,
             TemplateJson = templateJson,
             ParametersJson = parametersJson,
@@ -128,6 +131,8 @@ public sealed class ExecutorTools
         if (!ValidatePlanApproved(planId, out var planError))
             return planError!;
 
+        resourceId = NormalizeSubscriptionInResourceId(resourceId);
+
         if (!Enum.TryParse<ResourceMutationOperation>(operation, out var opEnum))
             return JsonSerializer.Serialize(new { error = true, message = $"Invalid operation '{operation}'." });
 
@@ -195,9 +200,23 @@ public sealed class ExecutorTools
         return JsonSerializer.Serialize(new { error = true, message = "Mutation failed after 3 attempts." });
     }
 
+    [Description("Retrieve the full details of a plan by its plan_id, including all operations and metadata.")]
+    public string GetPlanDetails(
+        [Description("The plan_id to retrieve")] string planId)
+    {
+        if (!Guid.TryParse(planId, out var guid))
+            return JsonSerializer.Serialize(new { error = true, message = "Invalid plan_id format." });
+
+        var data = _planStore.GetPlanData(guid);
+        if (data is null)
+            return JsonSerializer.Serialize(new { error = true, message = "Plan not found or expired." });
+
+        return data.Value.GetRawText();
+    }
+
     [Description("Check provisioning status of an ARM deployment by name.")]
     public async Task<string> GetDeploymentStatusAsync(
-        [Description("Azure subscription ID")] string subscriptionId,
+        [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscriptionId,
         [Description("Deployment name")] string deploymentName,
         [Description("Resource group name; omit for subscription-scoped deployments")] string? resourceGroupName = null,
         CancellationToken cancellationToken = default)
@@ -205,7 +224,7 @@ public sealed class ExecutorTools
         try
         {
             var result = await _deploymentService.GetDeploymentAsync(
-                subscriptionId, resourceGroupName, deploymentName, cancellationToken);
+                _subscriptionId, resourceGroupName, deploymentName, cancellationToken);
             return JsonSerializer.Serialize(result);
         }
         catch (RequestFailedException ex) when (ex.Status is 429 or 503)
@@ -260,4 +279,17 @@ public sealed class ExecutorTools
         422 => "validation",
         _ => "azure_api"
     };
+
+    private string NormalizeSubscriptionInResourceId(string resourceId)
+    {
+        const string marker = "/subscriptions/";
+        var start = resourceId.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0) return resourceId;
+
+        var idStart = start + marker.Length;
+        var idEnd = resourceId.IndexOf('/', idStart);
+        if (idEnd < 0) return marker + _subscriptionId;
+
+        return resourceId[..idStart] + _subscriptionId + resourceId[idEnd..];
+    }
 }

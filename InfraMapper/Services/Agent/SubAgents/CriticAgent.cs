@@ -1,7 +1,6 @@
 using Anthropic;
+using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.Tools;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
@@ -14,52 +13,71 @@ namespace InfraMapper.Services.Agent.SubAgents;
 /// </summary>
 public sealed class CriticAgent
 {
-    private readonly IAnthropicClient _client;
+    private readonly AnthropicClient _client;
     private readonly PlanStore _planStore;
 
-    public CriticAgent(IAnthropicClient client, PlanStore planStore)
+    public CriticAgent(AnthropicClient client, PlanStore planStore)
     {
         _client = client;
         _planStore = planStore;
     }
 
     /// <summary>
-    /// Builds the CriticAgent AIAgent + its "critique_plan" AIFunction.
+    /// Builds the CriticAgent + its "critique_plan" AgentTool.
     /// <paramref name="revisionCount"/> is the number of prior revision cycles for this session.
     /// </summary>
-    public (AIAgent Agent, AIFunction Function) BuildForSession(int revisionCount = 0)
+    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(int revisionCount = 0)
     {
         var tools = new CriticTools(_planStore, revisionCount);
-        var aiTools = BuildAiTools(tools);
+        var agentTools = BuildAgentTools(tools);
 
-        var agent = _client.AsAIAgent(
-            model: AgentRegistry.GetModel("critic"),
-            instructions: SystemPrompt,
-            name: "InfraMapperCritic",
-            description: "Reviews deployment plans for correctness, security, and policy compliance.",
-            tools: aiTools);
+        var agent = new AnthropicAgent(
+            _client,
+            AgentRegistry.GetModel("critic"),
+            SystemPrompt,
+            agentTools);
 
-        var function = agent.AsAIFunction(new AIFunctionFactoryOptions
+        var function = new AgentTool
         {
             Name = "critique_plan",
             Description =
                 "Validate a deployment plan for correctness, naming rules, dependency ordering, " +
                 "region/SKU compatibility, and security. Returns { approved, feedback, plan_id, revision_count }. " +
                 "You MUST call this after every plan_deployment before presenting a plan to the user.",
-        });
+            InputSchema = """{"type":"object","properties":{"plan_id":{"type":"string","description":"The plan_id to critique"}},"required":["plan_id"]}""",
+            Invoke = async (argsJson, ct) =>
+            {
+                var message = BuildUserMessage(argsJson);
+                return await agent.RunAsync(message, ct);
+            }
+        };
 
         return (agent, function);
     }
 
-    private static IList<AITool> BuildAiTools(CriticTools tools)
+    private static string BuildUserMessage(string? argsJson)
     {
-        var opts = OrchestratorTools.SnakeCaseOpts;
+        if (string.IsNullOrWhiteSpace(argsJson)) return "Critique the current plan.";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
+            var root = doc.RootElement;
+            var planId = root.TryGetProperty("plan_id", out var p) ? p.GetString() : null;
+            return $"Critique plan with id: {planId ?? "latest"}";
+        }
+        catch { return "Critique the current plan."; }
+    }
+
+    private static IList<AgentTool> BuildAgentTools(CriticTools tools)
+    {
         return
         [
-            AIFunctionFactory.Create(tools.GetPlanDetails,
-                new AIFunctionFactoryOptions { Name = "get_plan_details", SerializerOptions = opts }),
-            AIFunctionFactory.Create(tools.RecordVerdict,
-                new AIFunctionFactoryOptions { Name = "record_verdict", SerializerOptions = opts }),
+            AgentToolFactory.Create(tools.GetPlanDetails,
+                "get_plan_details",
+                "Retrieve the full details of a deployment plan by plan_id."),
+            AgentToolFactory.Create(tools.RecordVerdict,
+                "record_verdict",
+                "Record the critic verdict (approved/rejected) with detailed feedback."),
         ];
     }
 
@@ -69,9 +87,24 @@ public sealed class CriticAgent
 
         When asked to critique a plan, follow this process:
 
-        1. Call get_plan_details to retrieve the full plan.
+        1. Call get_plan_details to retrieve the full plan. It returns:
+           { title, risk_level, operations: [{ action, resource_type, resource_name, resource_group, details }] }
 
-        2. Evaluate the plan against ALL of these criteria:
+           IMPORTANT: Operations are high-level descriptors, NOT ARM templates.
+           The ARM template is constructed by the Executor at deploy time.
+           Validate based on resource_type, resource_name, resource_group, and the details field.
+           Do NOT reject a plan for lacking ARM template JSON — that is expected and correct.
+
+        2. Assess the plan type:
+
+           DELETE-ONLY PLAN (all operations have action "Delete"):
+           Apply only these checks:
+           • Risk level must be "High" if a resource group is being deleted, "Medium" otherwise.
+           • Each delete operation must explicitly name the resource being deleted (no wildcards).
+           • Approve immediately if these pass. Skip naming, dependency, SKU, and security checks.
+
+           CREATE/UPDATE/DEPLOY PLAN (any operation is not Delete):
+           Evaluate against ALL of these criteria:
 
            NAMING RULES
            • Storage accounts: 3–24 chars, lowercase letters and numbers only, globally unique.
@@ -105,15 +138,19 @@ public sealed class CriticAgent
            • High: existing resource modifications, deletions, or production workloads.
 
         3. Call record_verdict with:
-           • approved: true ONLY if the plan passes all checks.
-           • approved: false if ANY check fails.
+           • approved: true ONLY if the plan passes all applicable checks.
+           • approved: false if ANY applicable check fails.
            • feedback: if approved, briefly confirm what passed; if rejected, list EVERY specific issue
              that must be fixed, with the resource name and exact correction required.
+             If the fix requires a human preference rather than an Azure correctness correction,
+             include "requires_user_choice" in the feedback and state the exact choice needed.
 
         CRITICAL RULES:
         • You MUST call record_verdict before finishing. No exceptions.
         • After record_verdict succeeds, your final response MUST be the exact JSON returned by
           record_verdict. No other text.
-        • Be strict. A plan that might work is not good enough — the plan must definitely work.
+        • For delete-only plans: be fast and permissive — only block on the two checks above.
+        • For create/update plans: be strict. A plan that might work is not good enough.
+        • Do NOT use emojis.
         """;
 }

@@ -43,14 +43,16 @@ var anthropicApiKey = builder.Configuration["Anthropic:ApiKey"]
     ?? throw new InvalidOperationException(
         "Anthropic API key not configured. Set Anthropic:ApiKey in config or ANTHROPIC_API_KEY env var.");
 
-// Register IAnthropicClient (Microsoft.Agents.AI.Anthropic connector).
-builder.Services.AddSingleton<IAnthropicClient>(_ => new AnthropicClient { ApiKey = anthropicApiKey });
+// Register AnthropicClient (direct Anthropic SDK).
+builder.Services.AddSingleton(_ => new Anthropic.AnthropicClient { ApiKey = anthropicApiKey });
 
 builder.Services.AddSingleton<PlanStore>();
+builder.Services.AddSingleton<QuestionStore>();
 builder.Services.AddSingleton<ILessonsStore, JsonFileLessonsStore>();
 builder.Services.AddSingleton<InvestigatorAgent>();
 builder.Services.AddSingleton<PlannerAgent>();
 builder.Services.AddSingleton<CriticAgent>();
+builder.Services.AddSingleton<QuestionerAgent>();
 builder.Services.AddSingleton<ExecutorAgent>();
 builder.Services.AddSingleton<ReflectorAgent>();
 builder.Services.AddSingleton<ConversationStore>();

@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Wrench, CheckCircle2, XCircle, X, ChevronDown, ChevronRight, Cpu } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Send, Bot, Wrench, CheckCircle2, XCircle, X, ChevronDown, ChevronRight, Cpu, AlertTriangle } from "lucide-react";
 import { streamChat } from "@/lib/api";
-import type { ChatMessage, ToolCall, Plan, ResourceNode, AgentCallItem } from "@/lib/types";
+import type { ChatMessage, ToolCall, Plan, ResourceNode, AgentActivityItem, ClarifyingQuestion } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import PlanCard from "./PlanCard";
+import QuestionCard from "./QuestionCard";
 
 interface Props {
   sessionId: string;
@@ -32,6 +33,7 @@ const TOOL_LABELS: Record<string, string> = {
   investigate_infrastructure: "Investigating infrastructure",
   plan_deployment: "Planning deployment",
   critique_plan: "Critiquing plan",
+  ask_clarifying_question: "Asking clarification",
   execute_plan: "Executing plan",
   reflect_on_deployment: "Reflecting on deployment",
 };
@@ -40,51 +42,41 @@ const AGENT_LABELS: Record<string, string> = {
   investigate_infrastructure: "Investigator",
   plan_deployment: "Planner",
   critique_plan: "Critic",
+  ask_clarifying_question: "Questioner",
   execute_plan: "Executor",
   reflect_on_deployment: "Reflector",
 };
 
-function AgentTimeline({ agentCalls }: { agentCalls: AgentCallItem[] }) {
-  const [open, setOpen] = useState(false);
-  if (agentCalls.length === 0) return null;
+const ORCHESTRATOR_MODEL = "claude-haiku-4-5";
 
-  return (
-    <div className="mb-2 border border-slate-700 rounded overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-1.5 px-2 py-1 bg-slate-800/50 hover:bg-slate-800 text-[10px] text-slate-400 transition-colors"
-      >
-        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-        <Cpu size={10} className="text-purple-400" />
-        <span>Agent timeline — {agentCalls.length} invocation{agentCalls.length !== 1 ? "s" : ""}</span>
-      </button>
-      {open && (
-        <div className="px-2 py-1.5 space-y-1 bg-slate-900/50">
-          {agentCalls.map((ac, i) => (
-            <div key={i} className="flex items-center gap-1.5 text-[10px]">
-              {!ac.done ? (
-                <Cpu size={10} className="text-purple-400 animate-pulse flex-shrink-0" />
-              ) : ac.success === false ? (
-                <XCircle size={10} className="text-red-400 flex-shrink-0" />
-              ) : (
-                <CheckCircle2 size={10} className="text-purple-400 flex-shrink-0" />
-              )}
-              <span className="text-purple-300 font-medium">{AGENT_LABELS[ac.agent] ?? ac.agent}</span>
-              <span className="text-slate-600">·</span>
-              <span className="text-slate-500">{ac.model.replace("claude-", "").replace("-", " ")}</span>
-              {ac.iteration > 1 && (
-                <span className="text-amber-500 text-[9px]">#{ac.iteration}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+function formatModelName(model?: string) {
+  return model?.replace(/^claude-/, "").replace(/-/g, " ");
+}
+
+function collapsePreviousAgentRich(messages: ChatMessage[]) {
+  return messages.map((msg) =>
+    msg.role === "agent" && ((msg.activities?.length ?? 0) > 0 || (msg.plans?.length ?? 0) > 0 || msg.plan)
+      ? { ...msg, richCollapsed: true }
+      : msg
   );
+}
+
+function cleanAgentText(value?: string) {
+  return value
+    ?.replace(/\*\*/g, "")
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isOperationResult(content: string) {
+  const normalized = cleanAgentText(content.replace(/\r/g, "")) ?? "";
+  return /\b(complete|completed|succeeded|successfully|deleted|created|updated|deployed)\b/i.test(normalized);
 }
 
 function ToolCallList({ toolCalls }: { toolCalls: ToolCall[] }) {
   if (toolCalls.length === 0) return null;
+
   return (
     <div className="mb-2 space-y-1 border-b border-slate-700 pb-2">
       {toolCalls.map((tc, i) => (
@@ -105,38 +97,128 @@ function ToolCallList({ toolCalls }: { toolCalls: ToolCall[] }) {
   );
 }
 
+function ActivityTimeline({ activities, defaultOpen = true }: { activities?: AgentActivityItem[]; defaultOpen?: boolean }) {
+  const [openOverride, setOpenOverride] = useState<boolean | undefined>();
+  const open = openOverride ?? defaultOpen;
+
+  if (!activities || activities.length === 0) return null;
+
+  const roots = activities.filter((item) => !item.parentId);
+  const children = new Map<string, AgentActivityItem[]>();
+  activities.forEach((item) => {
+    if (!item.parentId) return;
+    children.set(item.parentId, [...(children.get(item.parentId) ?? []), item]);
+  });
+
+  function icon(item: AgentActivityItem) {
+    if (item.status === "running") return <Cpu size={11} className="animate-pulse text-blue-400" />;
+    if (item.status === "failed") return <XCircle size={11} className="text-red-400" />;
+    if (item.status === "rejected") return <AlertTriangle size={11} className="text-amber-400" />;
+    return <CheckCircle2 size={11} className="text-green-400" />;
+  }
+
+  function label(item: AgentActivityItem) {
+    return item.agent ? (AGENT_LABELS[item.agent] ?? item.agent) : item.tool ?? item.summary;
+  }
+
+  return (
+    <div className="mb-2 rounded border border-slate-700 bg-slate-950/40">
+      <button
+        onClick={() => setOpenOverride(!open)}
+        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[10px] text-slate-400 hover:bg-slate-900"
+      >
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        <Cpu size={10} className="text-blue-400" />
+        <span>Agents at work — {activities.length} event{activities.length === 1 ? "" : "s"}</span>
+      </button>
+      {open && (
+        <div className="space-y-1 border-t border-slate-800 px-2 py-2">
+          {roots.map((item) => (
+            <div key={item.id} className="rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
+              <div className="flex items-start gap-1.5 text-[10px]">
+                {icon(item)}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-medium text-slate-200">{label(item)}</span>
+                    {item.model && (
+                      <span className="text-slate-500">· {formatModelName(item.model)}</span>
+                    )}
+                  </div>
+                  <div className="text-slate-500">{item.message ?? item.summary}</div>
+                  {item.errorType && <div className="text-red-300">Error: {item.errorType}</div>}
+                </div>
+              </div>
+              {(children.get(item.id) ?? []).length > 0 && (
+                <div className="mt-1.5 space-y-1 border-l border-slate-700 pl-2">
+                  {(children.get(item.id) ?? []).map((child) => (
+                    <div key={child.id} className="flex items-start gap-1.5 text-[10px] text-slate-500">
+                      {icon(child)}
+                      <div className="min-w-0">
+                        <span className="font-medium text-slate-300">{label(child)}</span>
+                        {child.model && (
+                          <span className="ml-1 text-slate-600">· {formatModelName(child.model)}</span>
+                        )}
+                        <span> — {child.message ?? child.summary}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentMessage({
   msg,
   sessionId,
   onApproved,
   onRejected,
+  onQuestionAnswered,
 }: {
   msg: ChatMessage;
   sessionId: string;
   onApproved: () => void;
   onRejected: () => void;
+  onQuestionAnswered: (questionId: string, answer: string) => void;
 }) {
+  const richOpen = msg.richCollapsed !== true;
+  const operationResult = msg.content ? isOperationResult(msg.content) : false;
+
   return (
-    <div className="flex gap-2 justify-start">
-      <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-        <Bot size={12} className="text-white" />
+    <div className="w-full space-y-2 rounded-lg border border-slate-800 bg-[#1e293b] px-3 py-2 text-xs leading-relaxed text-slate-200">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-300">
+        <Bot size={11} />
+        <span>InfraMapper Agent</span>
+        <span className="normal-case tracking-normal text-slate-500">· {formatModelName(ORCHESTRATOR_MODEL)}</span>
       </div>
-      <div className="max-w-[85%] bg-[#1e293b] rounded-lg px-3 py-2 text-xs leading-relaxed text-slate-200 break-words min-w-0 overflow-hidden">
-        {msg.agentCalls && msg.agentCalls.length > 0 && (
-          <AgentTimeline agentCalls={msg.agentCalls} />
-        )}
+      <div className="break-words">
+        <ActivityTimeline activities={msg.activities} defaultOpen={richOpen} />
         {msg.toolCalls && msg.toolCalls.length > 0 && (
           <ToolCallList toolCalls={msg.toolCalls} />
         )}
-        {msg.plan && (
+        {(msg.plans ?? (msg.plan ? [msg.plan] : [])).map((plan) => (
           <PlanCard
-            plan={msg.plan}
+            key={plan.planId}
+            plan={plan}
             sessionId={sessionId}
             onApproved={onApproved}
             onRejected={onRejected}
+            defaultDetailsOpen={richOpen}
           />
-        )}
-        {msg.content && (
+        ))}
+        {(msg.questions ?? (msg.question ? [msg.question] : [])).map((question) => (
+          <QuestionCard
+            key={question.questionId}
+            question={question}
+            sessionId={sessionId}
+            onAnswered={onQuestionAnswered}
+          />
+        ))}
+        {msg.content && !operationResult && !msg.plan && !(msg.plans && msg.plans.length > 0) && !(msg.questions && msg.questions.length > 0) && (
           <ReactMarkdown
             components={{
               p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
@@ -152,7 +234,7 @@ function AgentMessage({
               td: ({ children }) => <td className="border border-slate-600 px-2 py-1">{children}</td>,
             }}
           >
-            {msg.content}
+            {cleanAgentText(msg.content)}
           </ReactMarkdown>
         )}
         {msg.isStreaming && !msg.content && !msg.plan && (
@@ -181,6 +263,87 @@ export default function ChatPanel({
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  function handleActivityStart(data: Extract<import("@/lib/types").AgentStreamEvent, { type: "activity_start" }>["data"]) {
+    const item: AgentActivityItem = {
+      id: data.id,
+      parentId: data.parent_id ?? undefined,
+      kind: data.kind,
+      agent: data.agent ?? undefined,
+      tool: data.tool ?? undefined,
+      model: data.model ?? undefined,
+      status: data.status,
+      summary: data.summary,
+      detailPreview: data.detail_preview ?? undefined,
+      errorType: data.error_type ?? undefined,
+      message: data.message ?? undefined,
+      startedAt: Date.now(),
+    };
+    onMessagesChange((prev: ChatMessage[]) => {
+      const msgs = [...prev];
+      const last = msgs[msgs.length - 1];
+      const activities = last.activities ?? [];
+      const existing = activities.find((p) => p.id === item.id);
+      msgs[msgs.length - 1] = {
+        ...last,
+        activities: existing
+          ? activities.map((p) => p.id === item.id ? { ...p, ...item, startedAt: p.startedAt ?? item.startedAt } : p)
+          : [...activities, item],
+      };
+      return msgs;
+    });
+  }
+
+  function handleActivityEnd(data: Extract<import("@/lib/types").AgentStreamEvent, { type: "activity_end" }>["data"]) {
+    onMessagesChange((prev: ChatMessage[]) => {
+      const msgs = [...prev];
+      const last = msgs[msgs.length - 1];
+      const activities = last.activities ?? [];
+      const existing = activities.find((p) => p.id === data.id);
+      const patch: Partial<AgentActivityItem> = {
+        status: data.status,
+        summary: data.summary,
+        detailPreview: data.detail_preview ?? existing?.detailPreview,
+        errorType: data.error_type ?? existing?.errorType,
+        message: data.message ?? existing?.message,
+        endedAt: Date.now(),
+      };
+      const fallback: AgentActivityItem = {
+        id: data.id,
+        parentId: data.parent_id ?? undefined,
+        kind: data.kind ?? "tool",
+        agent: data.agent ?? undefined,
+        tool: data.tool ?? undefined,
+        model: data.model ?? undefined,
+        status: data.status,
+        summary: data.summary,
+        detailPreview: data.detail_preview ?? undefined,
+        errorType: data.error_type ?? undefined,
+        message: data.message ?? undefined,
+        endedAt: Date.now(),
+      };
+      msgs[msgs.length - 1] = {
+        ...last,
+        activities: existing
+          ? activities.map((p) => p.id === data.id ? { ...p, ...patch } : p)
+          : [...activities, fallback],
+      };
+      return msgs;
+    });
+  }
+
+  function appendQuestion(question: ClarifyingQuestion) {
+    onMessagesChange((prev: ChatMessage[]) => {
+      const msgs = [...prev];
+      const last = msgs[msgs.length - 1];
+      msgs[msgs.length - 1] = {
+        ...last,
+        question,
+        questions: [...(last.questions ?? []), question],
+      };
+      return msgs;
+    });
+  }
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -192,16 +355,6 @@ export default function ChatPanel({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syntheticPrompt]);
-
-  const updateLastMessage = useCallback((updater: (msg: ChatMessage) => ChatMessage) => {
-    onMessagesChange(
-      (() => {
-        const msgs = [...messages];
-        if (msgs.length > 0) msgs[msgs.length - 1] = updater(msgs[msgs.length - 1]);
-        return msgs;
-      })()
-    );
-  }, [messages, onMessagesChange]);
 
   async function handleSendText(overrideText: string) {
     const text = overrideText.trim();
@@ -216,11 +369,10 @@ export default function ChatPanel({
 
     setInput("");
     contextNodes.forEach((n) => onRemoveContext?.(n.id));
-
     const newMessages: ChatMessage[] = [
-      ...messages,
+      ...collapsePreviousAgentRich(messages),
       { role: "user", content: text },
-      { role: "agent", content: "", toolCalls: [], isStreaming: true },
+      { role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false },
     ];
     onMessagesChange(newMessages);
     setLoading(true);
@@ -252,36 +404,6 @@ export default function ChatPanel({
             };
             return msgs;
           });
-        } else if (evt.type === "agent_call") {
-          onMessagesChange((prev: ChatMessage[]) => {
-            const msgs = [...prev];
-            const last = msgs[msgs.length - 1];
-            const newCall: AgentCallItem = {
-              agent: evt.data.agent,
-              model: evt.data.model,
-              iteration: evt.data.iteration,
-              done: false,
-            };
-            msgs[msgs.length - 1] = {
-              ...last,
-              agentCalls: [...(last.agentCalls ?? []), newCall],
-            };
-            return msgs;
-          });
-        } else if (evt.type === "agent_result") {
-          onMessagesChange((prev: ChatMessage[]) => {
-            const msgs = [...prev];
-            const last = msgs[msgs.length - 1];
-            msgs[msgs.length - 1] = {
-              ...last,
-              agentCalls: last.agentCalls?.map((ac) =>
-                ac.agent === evt.data.agent && ac.iteration === evt.data.iteration && !ac.done
-                  ? { ...ac, done: true, success: evt.data.success }
-                  : ac
-              ),
-            };
-            return msgs;
-          });
         } else if (evt.type === "plan") {
           onSessionIdSet(evt.data.session_id);
           const plan: Plan = {
@@ -290,14 +412,35 @@ export default function ChatPanel({
             operations: evt.data.operations,
             riskLevel: evt.data.risk_level as Plan["riskLevel"],
             estimatedCostNote: evt.data.estimated_cost_note,
+            criticVerdict: evt.data.critic_verdict,
             revisionCount: evt.data.revision_count,
-            status: "pending",
+            status: evt.data.status ?? "pending",
           };
           onMessagesChange((prev: ChatMessage[]) => {
             const msgs = [...prev];
-            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], plan };
+            const last = msgs[msgs.length - 1];
+            msgs[msgs.length - 1] = {
+              ...last,
+              plan,
+              plans: [...(last.plans ?? []), plan],
+            };
             return msgs;
           });
+        } else if (evt.type === "question") {
+          onSessionIdSet(evt.data.session_id);
+          appendQuestion({
+            questionId: evt.data.question_id,
+            title: evt.data.title,
+            prompt: evt.data.prompt,
+            options: evt.data.options,
+            defaultValue: evt.data.default_value ?? undefined,
+            allowCustom: evt.data.allow_custom,
+            status: "pending",
+          });
+        } else if (evt.type === "activity_start") {
+          handleActivityStart(evt.data);
+        } else if (evt.type === "activity_end") {
+          handleActivityEnd(evt.data);
         } else if (evt.type === "usage") {
           onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
         } else if (evt.type === "reply") {
@@ -354,28 +497,109 @@ export default function ChatPanel({
   }
 
   function handlePlanApproved() {
-    // After approval the backend auto-injects a resume message;
-    // trigger a follow-up chat to continue the agent
+    // After approval, the backend injects an executor-specific resume message.
     setTimeout(() => {
-      const resumeMessages: ChatMessage[] = [
-        ...messages.map((m) => m),
-        { role: "agent", content: "", toolCalls: [], isStreaming: true },
-      ];
-      // We need to call the stream with the continuation message
-      // The backend already injected "plan approved" into history, so we send empty resume
       handleResumeAfterApproval();
     }, 300);
+  }
+
+  function handleQuestionAnswered(questionId: string, answer: string) {
+    const next = messages.map((msg) => {
+      const questions = msg.questions?.map((q) =>
+        q.questionId === questionId ? { ...q, status: "answered" as const, answer } : q
+      );
+      return {
+        ...msg,
+        question: msg.question?.questionId === questionId
+          ? { ...msg.question, status: "answered" as const, answer }
+          : msg.question,
+        questions,
+      };
+    });
+
+    onMessagesChange(next);
+    const pending = next.flatMap((m) => m.questions ?? (m.question ? [m.question] : []))
+      .some((q) => q.status !== "answered" && !q.answer);
+
+    if (!pending) {
+      setTimeout(() => {
+        handleResumeAfterQuestion();
+      }, 300);
+    }
+  }
+
+  async function handleResumeAfterQuestion() {
+    setLoading(true);
+    onMessagesChange((prev) => [
+      ...collapsePreviousAgentRich(prev),
+      { role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false },
+    ]);
+
+    try {
+      for await (const evt of streamChat("continue with clarification answer", subscriptionId, sessionId)) {
+        if (evt.type === "activity_start") {
+          handleActivityStart(evt.data);
+        } else if (evt.type === "activity_end") {
+          handleActivityEnd(evt.data);
+        } else if (evt.type === "question") {
+          appendQuestion({
+            questionId: evt.data.question_id,
+            title: evt.data.title,
+            prompt: evt.data.prompt,
+            options: evt.data.options,
+            defaultValue: evt.data.default_value ?? undefined,
+            allowCustom: evt.data.allow_custom,
+            status: "pending",
+          });
+        } else if (evt.type === "plan") {
+          const plan: Plan = {
+            planId: evt.data.plan_id,
+            title: evt.data.title,
+            operations: evt.data.operations,
+            riskLevel: evt.data.risk_level as Plan["riskLevel"],
+            estimatedCostNote: evt.data.estimated_cost_note,
+            criticVerdict: evt.data.critic_verdict,
+            revisionCount: evt.data.revision_count,
+            status: evt.data.status ?? "pending",
+          };
+          onMessagesChange((prev) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            msgs[msgs.length - 1] = {
+              ...last,
+              plan,
+              plans: [...(last.plans ?? []), plan],
+            };
+            return msgs;
+          });
+        } else if (evt.type === "reply") {
+          onMessagesChange((prev) => {
+            const msgs = [...prev];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: evt.data.content,
+              isStreaming: false,
+            };
+            return msgs;
+          });
+        } else if (evt.type === "usage") {
+          onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleResumeAfterApproval() {
     setLoading(true);
     onMessagesChange((prev) => [
-      ...prev,
-      { role: "agent", content: "", toolCalls: [], isStreaming: true },
+      ...collapsePreviousAgentRich(prev),
+      { role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false },
     ]);
 
     try {
-      for await (const evt of streamChat("continue", subscriptionId, sessionId)) {
+      for await (const evt of streamChat("execute approved plan", subscriptionId, sessionId)) {
         if (evt.type === "tool_call") {
           onMessagesChange((prev) => {
             const msgs = [...prev];
@@ -400,36 +624,41 @@ export default function ChatPanel({
             };
             return msgs;
           });
-        } else if (evt.type === "agent_call") {
-          onMessagesChange((prev) => {
-            const msgs = [...prev];
-            const last = msgs[msgs.length - 1];
-            const newCall: AgentCallItem = {
-              agent: evt.data.agent,
-              model: evt.data.model,
-              iteration: evt.data.iteration,
-              done: false,
-            };
-            msgs[msgs.length - 1] = {
-              ...last,
-              agentCalls: [...(last.agentCalls ?? []), newCall],
-            };
-            return msgs;
-          });
-        } else if (evt.type === "agent_result") {
+        } else if (evt.type === "plan") {
+          const plan: Plan = {
+            planId: evt.data.plan_id,
+            title: evt.data.title,
+            operations: evt.data.operations,
+            riskLevel: evt.data.risk_level as Plan["riskLevel"],
+            estimatedCostNote: evt.data.estimated_cost_note,
+            criticVerdict: evt.data.critic_verdict,
+            revisionCount: evt.data.revision_count,
+            status: evt.data.status ?? "pending",
+          };
           onMessagesChange((prev) => {
             const msgs = [...prev];
             const last = msgs[msgs.length - 1];
             msgs[msgs.length - 1] = {
               ...last,
-              agentCalls: last.agentCalls?.map((ac) =>
-                ac.agent === evt.data.agent && ac.iteration === evt.data.iteration && !ac.done
-                  ? { ...ac, done: true, success: evt.data.success }
-                  : ac
-              ),
+              plan,
+              plans: [...(last.plans ?? []), plan],
             };
             return msgs;
           });
+        } else if (evt.type === "question") {
+          appendQuestion({
+            questionId: evt.data.question_id,
+            title: evt.data.title,
+            prompt: evt.data.prompt,
+            options: evt.data.options,
+            defaultValue: evt.data.default_value ?? undefined,
+            allowCustom: evt.data.allow_custom,
+            status: "pending",
+          });
+        } else if (evt.type === "activity_start") {
+          handleActivityStart(evt.data);
+        } else if (evt.type === "activity_end") {
+          handleActivityEnd(evt.data);
         } else if (evt.type === "reply") {
           onMessagesChange((prev) => {
             const msgs = [...prev];
@@ -455,6 +684,7 @@ export default function ChatPanel({
       <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
         <Bot size={14} className="text-blue-400" />
         <span className="text-xs font-semibold text-slate-300">InfraMapper Agent</span>
+        <span className="text-[10px] text-slate-500">· {formatModelName(ORCHESTRATOR_MODEL)}</span>
         {(tokenUsage.input > 0) && (
           <span className="ml-auto text-[10px] text-slate-600 font-mono">
             {tokenUsage.input.toLocaleString()} / 200k tokens
@@ -465,12 +695,10 @@ export default function ChatPanel({
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {messages.map((msg, i) =>
           msg.role === "user" ? (
-            <div key={i} className="flex gap-2 justify-end">
-              <div className="max-w-[85%] bg-blue-600 text-white rounded-lg px-3 py-2 text-xs break-words min-w-0 overflow-hidden">
+            <div key={i} className="w-full rounded-lg border border-blue-900/70 bg-blue-950/40 px-3 py-2">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-blue-300">You</div>
+              <div className="text-xs text-slate-100 break-words min-w-0 overflow-hidden">
                 {msg.content}
-              </div>
-              <div className="w-6 h-6 rounded-full bg-slate-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <User size={12} className="text-white" />
               </div>
             </div>
           ) : (
@@ -479,6 +707,7 @@ export default function ChatPanel({
               msg={msg}
               sessionId={sessionId}
               onApproved={handlePlanApproved}
+              onQuestionAnswered={handleQuestionAnswered}
               onRejected={() => {}}
             />
           )

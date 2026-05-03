@@ -25,7 +25,6 @@ function SessionItem({ session, isActive, onSelect, onDelete, onRename, showDele
   const [draft, setDraft] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setDraft(session.name); }, [session.name]);
   useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
 
   function commit() {

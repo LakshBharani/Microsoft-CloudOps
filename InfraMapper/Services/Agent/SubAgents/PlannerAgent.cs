@@ -1,8 +1,7 @@
 using Anthropic;
+using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.Memory;
 using InfraMapper.Services.Agent.Tools;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
@@ -14,11 +13,11 @@ namespace InfraMapper.Services.Agent.SubAgents;
 /// </summary>
 public sealed class PlannerAgent
 {
-    private readonly IAnthropicClient _client;
+    private readonly AnthropicClient _client;
     private readonly PlanStore _planStore;
     private readonly ILessonsStore _lessonsStore;
 
-    public PlannerAgent(IAnthropicClient client, PlanStore planStore, ILessonsStore lessonsStore)
+    public PlannerAgent(AnthropicClient client, PlanStore planStore, ILessonsStore lessonsStore)
     {
         _client = client;
         _planStore = planStore;
@@ -26,22 +25,21 @@ public sealed class PlannerAgent
     }
 
     /// <summary>
-    /// Builds a PlannerAgent AIAgent + its "plan_deployment" AIFunction for the given session.
+    /// Builds a PlannerAgent + its "plan_deployment" AgentTool for the given session.
     /// Call once per ConversationStore session during session initialisation.
     /// </summary>
-    public (AIAgent Agent, AIFunction Function) BuildForSession(string sessionId)
+    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(string sessionId)
     {
         var tools = new PlannerTools(_planStore, _lessonsStore, sessionId);
-        var aiTools = BuildAiTools(tools);
+        var agentTools = BuildAgentTools(tools);
 
-        var agent = _client.AsAIAgent(
-            model: AgentRegistry.GetModel("planner"),
-            instructions: SystemPrompt,
-            name: "InfraMapperPlanner",
-            description: "Generates ARM deployment plans with mandatory self-critique and revision before user approval.",
-            tools: aiTools);
+        var agent = new AnthropicAgent(
+            _client,
+            AgentRegistry.GetModel("planner"),
+            SystemPrompt,
+            agentTools);
 
-        var function = agent.AsAIFunction(new AIFunctionFactoryOptions
+        var function = new AgentTool
         {
             Name = "plan_deployment",
             Description =
@@ -49,27 +47,52 @@ public sealed class PlannerAgent
                 "The planner drafts an ARM template, self-critiques it, revises it, then registers the plan. " +
                 "Returns plan JSON including plan_id, title, operations, and risk_level. " +
                 "Always call this instead of create_plan when you need to deploy Azure resources.",
-        });
+            InputSchema = """{"type":"object","properties":{"intent":{"type":"string","description":"What the user wants to deploy or change"},"investigator_summary":{"type":"string","description":"Optional summary from the investigator agent"}},"required":["intent"]}""",
+            Invoke = async (argsJson, ct) =>
+            {
+                var message = BuildUserMessage(argsJson);
+                return await agent.RunAsync(message, ct);
+            }
+        };
 
         return (agent, function);
     }
 
+    private static string BuildUserMessage(string? argsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argsJson)) return "Plan the deployment.";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
+            var root = doc.RootElement;
+            var intent  = root.TryGetProperty("intent", out var i) ? i.GetString() : null;
+            var summary = root.TryGetProperty("investigator_summary", out var s) ? s.GetString() : null;
+            var msg = $"Plan deployment: {intent ?? "as described"}";
+            if (!string.IsNullOrWhiteSpace(summary))
+                msg += $"\n\nInvestigator summary:\n{summary}";
+            return msg;
+        }
+        catch { return "Plan the deployment."; }
+    }
+
     // ─── Internal tool wiring ────────────────────────────────────────────────
 
-    private static IList<AITool> BuildAiTools(PlannerTools tools)
+    private static IList<AgentTool> BuildAgentTools(PlannerTools tools)
     {
-        var opts = OrchestratorTools.SnakeCaseOpts;
         return
         [
             // Step 0 (optional): look up past lessons before drafting.
-            AIFunctionFactory.Create(tools.GetLessons,
-                new AIFunctionFactoryOptions { Name = "get_lessons", SerializerOptions = opts }),
+            AgentToolFactory.Create(tools.GetLessons,
+                "get_lessons",
+                "Retrieve past deployment lessons for specific Azure resource types."),
             // Step 2: forced critique commit before create_plan.
-            AIFunctionFactory.Create(tools.RecordCritique,
-                new AIFunctionFactoryOptions { Name = "record_critique", SerializerOptions = opts }),
+            AgentToolFactory.Create(tools.RecordCritique,
+                "record_critique",
+                "Record a self-critique of the current ARM template draft."),
             // Step 3: final plan creation.
-            AIFunctionFactory.Create(tools.CreatePlan,
-                new AIFunctionFactoryOptions { Name = "create_plan", SerializerOptions = opts }),
+            AgentToolFactory.Create(tools.CreatePlan,
+                "create_plan",
+                "Create and register the final deployment plan after self-critique."),
         ];
     }
 
@@ -113,10 +136,14 @@ public sealed class PlannerAgent
           • risk_level: Low (read-only or additive), Medium (new resources), High (destructive or production)
           • estimated_cost_note: a brief cost note if relevant
 
+        If the Orchestrator provides a question_answer, treat it as a hard planning constraint and
+        reflect it in operation details.
+
         CRITICAL RULES:
           • You MUST call record_critique BEFORE calling create_plan — no exceptions.
           • After create_plan returns, output ONLY its raw JSON as your final response. No other text.
           • Never skip steps or collapse them into one.
           • Always include ALL dependency resources in the operations list, even if the user didn't mention them.
+          • Do NOT use emojis.
         """;
 }

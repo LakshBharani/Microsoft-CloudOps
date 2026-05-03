@@ -1,8 +1,7 @@
 using Anthropic;
+using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.Memory;
 using InfraMapper.Services.Agent.Tools;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
@@ -13,50 +12,65 @@ namespace InfraMapper.Services.Agent.SubAgents;
 /// </summary>
 public sealed class ReflectorAgent
 {
-    private readonly IAnthropicClient _client;
+    private readonly AnthropicClient _client;
     private readonly ILessonsStore _lessonsStore;
 
-    public ReflectorAgent(IAnthropicClient client, ILessonsStore lessonsStore)
+    public ReflectorAgent(AnthropicClient client, ILessonsStore lessonsStore)
     {
         _client = client;
         _lessonsStore = lessonsStore;
     }
 
-    /// <summary>Builds the ReflectorAgent and its "reflect_on_deployment" AIFunction.</summary>
-    public (AIAgent Agent, AIFunction Function) Build()
+    /// <summary>Builds the ReflectorAgent and its "reflect_on_deployment" AgentTool.</summary>
+    public (AnthropicAgent Agent, AgentTool Function) Build()
     {
         var tools = new ReflectorTools(_lessonsStore);
-        var aiTools = BuildAiTools(tools);
+        var agentTools = BuildAgentTools(tools);
 
-        var agent = _client.AsAIAgent(
-            model: AgentRegistry.GetModel("reflector"),
-            instructions: SystemPrompt,
-            name: "InfraMapperReflector",
-            description: "Audits completed deployments and records lessons for future use.",
-            tools: aiTools);
+        var agent = new AnthropicAgent(
+            _client,
+            AgentRegistry.GetModel("reflector"),
+            SystemPrompt,
+            agentTools);
 
-        var function = agent.AsAIFunction(new AIFunctionFactoryOptions
+        var function = new AgentTool
         {
             Name = "reflect_on_deployment",
             Description =
                 "Audit a completed deployment and record lessons for cross-session memory. " +
                 "Call this after every execute_plan (success or failure) to build institutional knowledge. " +
                 "Accepts a summary of what was deployed, what succeeded, and what failed.",
-        });
+            InputSchema = """{"type":"object","properties":{"summary":{"type":"string","description":"Summary of what was deployed, what succeeded, and what failed"}},"required":["summary"]}""",
+            Invoke = async (argsJson, ct) =>
+            {
+                var message = BuildUserMessage(argsJson);
+                return await agent.RunAsync(message, ct);
+            }
+        };
 
         return (agent, function);
     }
 
-    private static IList<AITool> BuildAiTools(ReflectorTools tools)
+    private static string BuildUserMessage(string? argsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argsJson)) return "Reflect on the deployment.";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
+            var root = doc.RootElement;
+            var summary = root.TryGetProperty("summary", out var s) ? s.GetString() : null;
+            return $"Reflect on this deployment:\n{summary ?? "No summary provided"}";
+        }
+        catch { return "Reflect on the deployment."; }
+    }
+
+    private static IList<AgentTool> BuildAgentTools(ReflectorTools tools)
     {
         return
         [
-            AIFunctionFactory.Create(tools.WriteLesson,
-                new AIFunctionFactoryOptions
-                {
-                    Name = "write_lesson",
-                    SerializerOptions = OrchestratorTools.SnakeCaseOpts,
-                }),
+            AgentToolFactory.Create(tools.WriteLesson,
+                "write_lesson",
+                "Write a lesson learned from this deployment to persistent memory."),
         ];
     }
 
@@ -71,12 +85,12 @@ public sealed class ReflectorAgent
         3. Determine what failed or caused retries, if anything.
         4. Formulate a specific, actionable recommendation for future deployments of the same type.
            Good recommendations:
-             ✓ "Storage account names must be lowercase alphanumeric, max 24 chars; avoid hyphens."
-             ✓ "Premium_ZRS not available in eastus; use West US 2 or East US 2."
-             ✓ "Always create the resource group before creating resources inside it."
+             - "Storage account names must be lowercase alphanumeric, max 24 chars; avoid hyphens."
+             - "Premium_ZRS not available in eastus; use West US 2 or East US 2."
+             - "Always create the resource group before creating resources inside it."
            Bad recommendations:
-             ✗ "Make sure the template is correct." (too vague)
-             ✗ "The deployment succeeded." (not a lesson)
+             - "Make sure the template is correct." (too vague)
+             - "The deployment succeeded." (not a lesson)
 
         5. Call write_lesson with the intent summary, resource types, failure details (if any),
            and the recommendation.
@@ -85,5 +99,6 @@ public sealed class ReflectorAgent
         • You MUST call write_lesson. No exceptions, even for fully successful deployments
           (a lesson about what worked is still valuable).
         • After write_lesson returns, output ONLY its raw JSON result as your final response.
+        • Do NOT use emojis.
         """;
 }

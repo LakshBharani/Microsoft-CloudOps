@@ -58,8 +58,10 @@ public sealed class AgentService
         }
 
         // Inject approval message if the user approved a plan while the stream was closed.
-        var pending = _store.ConsumePendingApproval(sessionId);
-        var effectiveMessage = pending is not null
+        var pendingApproval = _store.ConsumePendingApproval(sessionId);
+        var pendingQuestionAnswer = _store.ConsumePendingQuestionAnswer(sessionId);
+        var pending = string.Join("\n", new[] { pendingApproval, pendingQuestionAnswer }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        var effectiveMessage = !string.IsNullOrWhiteSpace(pending)
             ? $"{pending}\n{request.Message}"
             : request.Message;
 
@@ -68,7 +70,7 @@ public sealed class AgentService
         string? streamError = null;
         try
         {
-            var agentStream = entry!.Agent.RunStreamingAsync(effectiveMessage, entry.Session, null, ct);
+            var agentStream = entry!.Agent.RunStreamingAsync(effectiveMessage, entry.Session, ct);
             var translator = new SseEventTranslator(sessionId, _planStore, autoApprovePlan);
             events = translator.TranslateAsync(agentStream, ct);
         }
@@ -90,4 +92,7 @@ public sealed class AgentService
     /// </summary>
     public void ResumeAfterPlanApproval(string sessionId, Guid planId) =>
         _store.SetPendingApproval(sessionId, planId);
+
+    public void ResumeAfterQuestionAnswer(string sessionId, Guid questionId, string answer) =>
+        _store.SetPendingQuestionAnswer(sessionId, questionId, answer);
 }

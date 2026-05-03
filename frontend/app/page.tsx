@@ -7,7 +7,7 @@ import { fetchGraph, diffInfra } from "@/lib/api";
 import type { InfrastructureGraph, ResourceNode, ChatMessage, Session, DiffResult } from "@/lib/types";
 import ResourcePanel from "@/components/ResourcePanel";
 import ChatPanel from "@/components/ChatPanel";
-import SessionSidebar from "@/components/SessionSidebar";
+import SessionTabs from "@/components/SessionTabs";
 import DiffPanel from "@/components/DiffPanel";
 import DevOpsSettings, { type DevOpsConfig } from "@/components/DevOpsSettings";
 
@@ -262,7 +262,15 @@ export default function Home() {
         )}
 
         {/* Chat panel */}
-        <div className="w-96 flex-shrink-0 flex flex-col border-l border-slate-700">
+        <div className="min-w-[620px] w-[44vw] max-w-[860px] flex-shrink-0 flex flex-col border-l border-slate-700">
+          <SessionTabs
+            sessions={sessions}
+            activeId={activeSessionId}
+            onSelect={setActiveSessionId}
+            onNew={handleNewSession}
+            onDelete={handleDeleteSession}
+            onRename={handleRenameSession}
+          />
           <ChatPanel
             key={activeSessionId}
             sessionId={activeAgentSessionId}
@@ -279,16 +287,6 @@ export default function Home() {
             onSyntheticPromptConsumed={() => setSyntheticPrompt(null)}
           />
         </div>
-
-        {/* Session sidebar */}
-        <SessionSidebar
-          sessions={sessions}
-          activeId={activeSessionId}
-          onSelect={setActiveSessionId}
-          onNew={handleNewSession}
-          onDelete={handleDeleteSession}
-          onRename={handleRenameSession}
-        />
       </div>
 
       {showDevOpsSettings && (

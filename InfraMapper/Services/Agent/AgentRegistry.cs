@@ -16,6 +16,7 @@ public static class AgentRegistry
         ["investigator"]  = "claude-haiku-4-5",
         ["planner"]       = "claude-sonnet-4-6",
         ["critic"]        = "claude-sonnet-4-6",
+        ["questioner"]    = "claude-haiku-4-5",
         ["executor"]      = "claude-haiku-4-5",
         ["reflector"]     = "claude-haiku-4-5",
     };

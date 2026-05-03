@@ -5,7 +5,6 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   type Node,
   type Edge,
   type NodeProps,
@@ -241,13 +240,6 @@ export default function InfraGraph({ graph, onNodeClick, diffStatus = {} }: Prop
     >
       <Background variant={BackgroundVariant.Dots} color="#1e293b" gap={20} />
       <Controls className="!bg-[#1e293b] !border-slate-700 !text-slate-300" />
-      <MiniMap
-        nodeColor={(n) => {
-          if (n.type === "resourceGroup") return "#334155";
-          return getResourceMeta((n.data?.type as string) ?? "").color;
-        }}
-        className="!bg-[#1e293b] !border-slate-700"
-      />
     </ReactFlow>
   );
 }

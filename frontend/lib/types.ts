@@ -28,6 +28,39 @@ export interface ToolCall {
   success?: boolean;
 }
 
+export interface AgentActivityItem {
+  id: string;
+  parentId?: string;
+  kind: "agent" | "tool" | "plan" | "question" | "error";
+  agent?: string;
+  tool?: string;
+  model?: string;
+  status: "running" | "success" | "failed" | "rejected" | "pending";
+  summary: string;
+  detailPreview?: string;
+  errorType?: string;
+  message?: string;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+export interface ClarifyingQuestionOption {
+  label: string;
+  value: string;
+  description?: string;
+}
+
+export interface ClarifyingQuestion {
+  questionId: string;
+  title: string;
+  prompt: string;
+  options: ClarifyingQuestionOption[];
+  defaultValue?: string;
+  allowCustom: boolean;
+  status?: "pending" | "answered";
+  answer?: string;
+}
+
 export interface PlanOperation {
   action: "Create" | "Update" | "Delete" | "Deploy";
   resource_type: string;
@@ -47,20 +80,16 @@ export interface Plan {
   status?: "pending" | "approved" | "rejected";
 }
 
-export interface AgentCallItem {
-  agent: string;
-  model: string;
-  iteration: number;
-  done: boolean;
-  success?: boolean;
-}
-
 export interface ChatMessage {
   role: "user" | "agent";
   content: string;
   toolCalls?: ToolCall[];
-  agentCalls?: AgentCallItem[];
   plan?: Plan;
+  plans?: Plan[];
+  question?: ClarifyingQuestion;
+  questions?: ClarifyingQuestion[];
+  activities?: AgentActivityItem[];
+  richCollapsed?: boolean;
   isStreaming?: boolean;
 }
 
@@ -116,9 +145,12 @@ export interface AgentChatResponse {
 export type AgentStreamEvent =
   | { type: "tool_call"; data: { tool: string; session_id: string } }
   | { type: "tool_result"; data: { tool: string; success: boolean; session_id: string } }
-  | { type: "plan"; data: { plan_id: string; title: string; operations: PlanOperation[]; risk_level: string; estimated_cost_note?: string; revision_count?: number; session_id: string } }
+  | { type: "plan"; data: { plan_id: string; title: string; operations: PlanOperation[]; risk_level: string; estimated_cost_note?: string; critic_verdict?: string; revision_count?: number; status?: Plan["status"]; session_id: string } }
   | { type: "reply"; data: { content: string; session_id: string } }
   | { type: "usage"; data: { input_tokens: number; output_tokens: number; session_id: string } }
   | { type: "error"; data: { message: string; session_id: string } }
   | { type: "agent_call"; data: { agent: string; model: string; iteration: number; parent_tool_call_id?: string; session_id: string } }
-  | { type: "agent_result"; data: { agent: string; success: boolean; iteration: number; input_tokens: number; output_tokens: number; session_id: string } };
+  | { type: "agent_result"; data: { agent: string; success: boolean; iteration: number; input_tokens: number; output_tokens: number; session_id: string } }
+  | { type: "activity_start"; data: { id: string; parent_id?: string | null; kind: AgentActivityItem["kind"]; agent?: string | null; tool?: string | null; model?: string | null; status: AgentActivityItem["status"]; summary: string; detail_preview?: string | null; error_type?: string | null; message?: string | null; session_id: string } }
+  | { type: "activity_end"; data: { id: string; parent_id?: string | null; kind?: AgentActivityItem["kind"]; agent?: string | null; tool?: string | null; model?: string | null; status: AgentActivityItem["status"]; summary: string; detail_preview?: string | null; error_type?: string | null; message?: string | null; session_id: string } }
+  | { type: "question"; data: { question_id: string; title: string; prompt: string; options: ClarifyingQuestionOption[]; default_value?: string | null; allow_custom: boolean; session_id: string } };

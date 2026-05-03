@@ -1,17 +1,20 @@
 using System.Text.Json;
+using Microsoft.Extensions.Hosting;
 
 namespace InfraMapper.Services.Agent.Memory;
 
 /// <summary>
-/// Persists deployment lessons to ~/.inframapper/lessons.json.
+/// Persists deployment lessons to InfraMapper/.inframapper/lessons.json.
 /// Uses a file lock on writes so multiple processes don't corrupt the file.
 /// Loads the full list on every Query (file is small — single demo deployment data).
 /// </summary>
 public sealed class JsonFileLessonsStore : ILessonsStore
 {
-    private static readonly string FilePath = Path.Combine(
+    private static readonly string LegacyFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".inframapper", "lessons.json");
+
+    private readonly string _filePath;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -19,9 +22,13 @@ public sealed class JsonFileLessonsStore : ILessonsStore
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    public JsonFileLessonsStore()
+    public JsonFileLessonsStore(IHostEnvironment environment)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+        _filePath = Path.Combine(environment.ContentRootPath, ".inframapper", "lessons.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+
+        if (!File.Exists(_filePath) && File.Exists(LegacyFilePath))
+            File.Copy(LegacyFilePath, _filePath);
     }
 
     public void Write(Lesson lesson)
@@ -29,7 +36,7 @@ public sealed class JsonFileLessonsStore : ILessonsStore
         var lessons = Load();
         lessons.Add(lesson);
 
-        using var fs = new FileStream(FilePath, FileMode.Create, FileAccess.Write, FileShare.None);
+        using var fs = new FileStream(_filePath, FileMode.Create, FileAccess.Write, FileShare.None);
         JsonSerializer.Serialize(fs, lessons, JsonOpts);
     }
 
@@ -48,10 +55,10 @@ public sealed class JsonFileLessonsStore : ILessonsStore
 
     private List<Lesson> Load()
     {
-        if (!File.Exists(FilePath)) return [];
+        if (!File.Exists(_filePath)) return [];
         try
         {
-            using var fs = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var fs = new FileStream(_filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             return JsonSerializer.Deserialize<List<Lesson>>(fs, JsonOpts) ?? [];
         }
         catch

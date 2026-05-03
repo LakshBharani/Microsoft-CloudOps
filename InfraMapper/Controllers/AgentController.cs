@@ -10,11 +10,13 @@ public sealed class AgentController : ControllerBase
 {
     private readonly AgentService _agentService;
     private readonly PlanStore _planStore;
+    private readonly QuestionStore _questionStore;
 
-    public AgentController(AgentService agentService, PlanStore planStore)
+    public AgentController(AgentService agentService, PlanStore planStore, QuestionStore questionStore)
     {
         _agentService = agentService;
         _planStore = planStore;
+        _questionStore = questionStore;
     }
 
     [HttpPost("chat")]
@@ -75,4 +77,23 @@ public sealed class AgentController : ControllerBase
 
         return Ok(new { rejected = true });
     }
+
+    [HttpPost("question/{questionId}/answer")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public ActionResult AnswerQuestion(Guid questionId, [FromQuery] string sessionId, [FromBody] QuestionAnswerRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Answer))
+            return BadRequest(new { error = "Answer is required." });
+        if (!_questionStore.TryAnswer(questionId, request.Answer, out var error))
+            return BadRequest(new { error });
+
+        _agentService.ResumeAfterQuestionAnswer(sessionId, questionId, request.Answer);
+        return Ok(new { answered = true });
+    }
+}
+
+public sealed class QuestionAnswerRequest
+{
+    public required string Answer { get; set; }
 }

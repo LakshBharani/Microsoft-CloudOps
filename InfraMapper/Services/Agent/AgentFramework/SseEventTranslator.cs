@@ -1,17 +1,15 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 
 namespace InfraMapper.Services.Agent.AgentFramework;
 
 /// <summary>
-/// Translates IAsyncEnumerable&lt;AgentResponseUpdate&gt; from Agent Framework
+/// Translates IAsyncEnumerable&lt;AgentStreamEvent&gt; from the new AnthropicAgent
 /// into the newline-delimited JSON SSE event format consumed by the frontend.
 ///
 /// Existing event types (preserved byte-for-byte): tool_call, tool_result, usage, plan, reply, error.
-/// New additive events: agent_call, agent_result (emitted when a sub-agent AIFunction is invoked).
+/// New additive events: agent_call, agent_result (emitted when a sub-agent AgentTool is invoked).
 ///
 /// Phase 3: plan events are buffered until the Critic approves them (silent retry UX).
 /// The final emitted plan event carries revision_count so the frontend can show a badge.
@@ -23,7 +21,7 @@ public sealed class SseEventTranslator
     private readonly bool _autoApprovePlan;
 
     /// <summary>
-    /// Sub-agent names registered via AsAIFunction() — tool names matching these
+    /// Sub-agent names registered as AgentTools — tool names matching these
     /// get agent_call / agent_result events in addition to the normal tool_call / tool_result.
     /// </summary>
     public static readonly HashSet<string> SubAgentToolNames = new(StringComparer.OrdinalIgnoreCase)
@@ -31,6 +29,7 @@ public sealed class SseEventTranslator
         "investigate_infrastructure",
         "plan_deployment",
         "critique_plan",
+        "ask_clarifying_question",
         "execute_plan",
         "reflect_on_deployment",
     };
@@ -51,104 +50,146 @@ public sealed class SseEventTranslator
     }
 
     public async IAsyncEnumerable<string> TranslateAsync(
-        IAsyncEnumerable<AgentResponseUpdate> stream,
+        IAsyncEnumerable<AgentStreamEvent> stream,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var callIdToName = new Dictionary<string, string>();
         var textBuilder = new StringBuilder();
         long totalInput = 0, totalOutput = 0;
         string? errorMessage = null;
 
-        await foreach (var update in stream.WithCancellation(ct))
+        await foreach (var evt in stream.WithCancellation(ct))
         {
-            foreach (var content in update.Contents)
+            switch (evt)
             {
-                switch (content)
+                case AgentStreamEvent.ToolCall tc:
                 {
-                    case FunctionCallContent fcc:
+                    var toolName = tc.ToolName;
+                    var callId   = tc.CallId;
+
+                    yield return Evt("tool_call", new { tool = toolName, session_id = _sessionId });
+                    yield return Evt("activity_start", new
                     {
-                        var toolName = fcc.Name ?? "";
-                        if (fcc.CallId is not null)
-                            callIdToName[fcc.CallId] = toolName;
+                        id = callId ?? toolName,
+                        parent_id = (string?)null,
+                        kind = SubAgentToolNames.Contains(toolName) ? "agent" : "tool",
+                        agent = SubAgentToolNames.Contains(toolName) ? toolName : null,
+                        tool = SubAgentToolNames.Contains(toolName) ? null : toolName,
+                        model = SubAgentToolNames.Contains(toolName) ? AgentRegistry.GetModel(ToolNameToAgentName(toolName)) : null,
+                        status = "running",
+                        summary = ActivityStartSummary(toolName),
+                        session_id = _sessionId
+                    });
 
-                        yield return Evt("tool_call", new { tool = toolName, session_id = _sessionId });
-
-                        if (SubAgentToolNames.Contains(toolName))
-                        {
-                            _subAgentIterations.TryGetValue(toolName, out var prev);
-                            var iter = prev + 1;
-                            _subAgentIterations[toolName] = iter;
-
-                            if (fcc.CallId is not null)
-                                _pendingSubAgentCalls[fcc.CallId] = (toolName, iter);
-
-                            var model = AgentRegistry.GetModel(ToolNameToAgentName(toolName));
-                            yield return Evt("agent_call", new
-                            {
-                                agent = toolName,
-                                model,
-                                iteration = iter,
-                                parent_tool_call_id = fcc.CallId,
-                                session_id = _sessionId
-                            });
-                        }
-                        break;
-                    }
-
-                    case FunctionResultContent frc:
+                    if (SubAgentToolNames.Contains(toolName))
                     {
-                        var toolName = frc.CallId is not null
-                            ? callIdToName.GetValueOrDefault(frc.CallId, "")
-                            : "";
-                        var resultStr = frc.Result?.ToString() ?? "";
-                        var isError = resultStr.Contains("\"error\":true");
+                        _subAgentIterations.TryGetValue(toolName, out var prev);
+                        var iter = prev + 1;
+                        _subAgentIterations[toolName] = iter;
 
-                        yield return Evt("tool_result", new { tool = toolName, success = !isError, session_id = _sessionId });
+                        if (callId is not null)
+                            _pendingSubAgentCalls[callId] = (toolName, iter);
 
-                        if (frc.CallId is not null && _pendingSubAgentCalls.TryGetValue(frc.CallId, out var pending))
+                        var model = AgentRegistry.GetModel(ToolNameToAgentName(toolName));
+                        yield return Evt("agent_call", new
                         {
-                            _pendingSubAgentCalls.Remove(frc.CallId);
-                            yield return Evt("agent_result", new
-                            {
-                                agent = pending.agentName,
-                                success = !isError,
-                                iteration = pending.iteration,
-                                input_tokens = 0,
-                                output_tokens = 0,
-                                session_id = _sessionId
-                            });
-                        }
-
-                        // Buffer plan events from plan_deployment (Phase 2) or create_plan (Phase 0/1 fallback).
-                        // The plan SSE event is held until the Critic approves or the stream ends.
-                        if ((toolName == "plan_deployment" || toolName == "create_plan") && !isError)
-                        {
-                            _bufferedPlanResultJson = resultStr;
-                        }
-
-                        // Phase 3: Critic result decides whether to emit or discard the buffered plan.
-                        if (toolName == "critique_plan" && !isError)
-                        {
-                            foreach (var evt in HandleCritiqueResult(resultStr))
-                                yield return evt;
-                        }
-                        break;
+                            agent      = toolName,
+                            model,
+                            iteration  = iter,
+                            parent_tool_call_id = callId,
+                            session_id = _sessionId
+                        });
                     }
-
-                    case TextContent tc:
-                        if (!string.IsNullOrEmpty(tc.Text))
-                            textBuilder.Append(tc.Text);
-                        break;
-
-                    case UsageContent uc:
-                        totalInput += uc.Details?.InputTokenCount ?? 0;
-                        totalOutput += uc.Details?.OutputTokenCount ?? 0;
-                        break;
-
-                    case ErrorContent ec:
-                        errorMessage = ec.Message;
-                        break;
+                    break;
                 }
+
+                case AgentStreamEvent.ToolResult tr:
+                {
+                    var toolName  = tr.ToolName;
+                    var callId    = tr.CallId;
+                    var resultStr = tr.ResultJson;
+                    var isError   = !tr.Success;
+
+                    yield return Evt("tool_result", new { tool = toolName, success = tr.Success, session_id = _sessionId });
+                    var (errorType, message) = SummarizeResult(resultStr);
+                    yield return Evt("activity_end", new
+                    {
+                        id = callId ?? toolName,
+                        kind = SubAgentToolNames.Contains(toolName) ? "agent" : "tool",
+                        agent = SubAgentToolNames.Contains(toolName) ? toolName : null,
+                        tool = SubAgentToolNames.Contains(toolName) ? null : toolName,
+                        status = tr.Success ? "success" : "failed",
+                        summary = tr.Success ? ActivityEndSummary(toolName) : $"{ToolDisplayName(toolName)} failed",
+                        detail_preview = Preview(resultStr),
+                        error_type = errorType,
+                        message,
+                        session_id = _sessionId
+                    });
+
+                    if (callId is not null && _pendingSubAgentCalls.TryGetValue(callId, out var pending))
+                    {
+                        _pendingSubAgentCalls.Remove(callId);
+                        yield return Evt("agent_result", new
+                        {
+                            agent         = pending.agentName,
+                            success       = !isError,
+                            iteration     = pending.iteration,
+                            input_tokens  = 0,
+                            output_tokens = 0,
+                            session_id    = _sessionId
+                        });
+                    }
+
+                    // Buffer plan events from plan_deployment (Phase 2) or create_plan (Phase 0/1 fallback).
+                    // The plan SSE event is held until the Critic approves or the stream ends.
+                    if ((toolName == "plan_deployment" || toolName == "create_plan") && !isError)
+                    {
+                        _bufferedPlanResultJson = resultStr;
+                    }
+
+                    // Phase 3: Critic result decides whether to emit or discard the buffered plan.
+                    if (toolName == "critique_plan" && !isError)
+                    {
+                        foreach (var e in HandleCritiqueResult(resultStr))
+                            yield return e;
+                    }
+                    if (toolName == "ask_clarifying_question" && !isError)
+                    {
+                        foreach (var e in BuildQuestionEvents(resultStr))
+                            yield return e;
+                    }
+                    break;
+                }
+
+                case AgentStreamEvent.Activity a:
+                    yield return Evt(a.Phase == "start" ? "activity_start" : "activity_end", new
+                    {
+                        id = a.Id,
+                        parent_id = a.ParentId,
+                        kind = a.Kind,
+                        agent = a.Agent,
+                        tool = a.Tool,
+                        model = a.Model,
+                        status = a.Status,
+                        summary = a.Summary,
+                        detail_preview = a.DetailPreview,
+                        error_type = a.ErrorType,
+                        message = a.Message,
+                        session_id = _sessionId
+                    });
+                    break;
+
+                case AgentStreamEvent.Usage u:
+                    totalInput  += u.InputTokens;
+                    totalOutput += u.OutputTokens;
+                    break;
+
+                case AgentStreamEvent.Done d:
+                    textBuilder.Append(d.Text);
+                    break;
+
+                case AgentStreamEvent.Error e:
+                    errorMessage = e.Message;
+                    break;
             }
         }
 
@@ -169,15 +210,15 @@ public sealed class SseEventTranslator
         if (totalInput > 0 || totalOutput > 0)
             yield return Evt("usage", new
             {
-                input_tokens = (int)totalInput,
+                input_tokens  = (int)totalInput,
                 output_tokens = (int)totalOutput,
-                session_id = _sessionId
+                session_id    = _sessionId
             });
 
         var text = textBuilder.ToString();
         yield return Evt("reply", new
         {
-            content = text.Length > 0 ? text : "Done.",
+            content    = text.Length > 0 ? text : "Done.",
             session_id = _sessionId
         });
     }
@@ -187,17 +228,25 @@ public sealed class SseEventTranslator
     private IEnumerable<string> HandleCritiqueResult(string critiqueJson)
     {
         bool? approved = null;
+        string? feedback = null;
         try
         {
-            using var doc = JsonDocument.Parse(critiqueJson);
+            using var doc = JsonDocument.Parse(ExtractJsonObject(critiqueJson));
             if (doc.RootElement.TryGetProperty("approved", out var approvedEl))
                 approved = approvedEl.GetBoolean();
+            if (doc.RootElement.TryGetProperty("feedback", out var feedbackEl))
+                feedback = feedbackEl.GetString();
         }
         catch { /* malformed — treat as approved to avoid blocking */ }
 
         if (approved == false)
         {
-            // Critic rejected: discard the buffered plan, increment revision counter.
+            // Critic rejected: still emit the plan so the UI can show what failed and why.
+            if (_bufferedPlanResultJson is not null)
+            {
+                foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount, "rejected", feedback))
+                    yield return evt;
+            }
             _bufferedPlanResultJson = null;
             _planRevisionCount++;
             yield break;
@@ -212,16 +261,20 @@ public sealed class SseEventTranslator
     {
         if (_bufferedPlanResultJson is null) yield break;
 
-        foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount))
+        foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount, "pending"))
             yield return evt;
 
         _bufferedPlanResultJson = null;
     }
 
-    private IEnumerable<string> BuildPlanEvents(string resultJson, int revisionCount)
+    private IEnumerable<string> BuildPlanEvents(
+        string resultJson,
+        int revisionCount,
+        string status,
+        string? criticFeedbackOverride = null)
     {
         JsonDocument? doc = null;
-        try { doc = JsonDocument.Parse(resultJson); }
+        try { doc = JsonDocument.Parse(ExtractJsonObject(resultJson)); }
         catch { yield break; }
 
         using (doc)
@@ -245,17 +298,95 @@ public sealed class SseEventTranslator
                 yield return Evt("plan", new
                 {
                     plan_id = planIdEl.GetString(),
-                    title = root.TryGetProperty("title", out var t) ? t.GetString() : null,
+                    title   = root.TryGetProperty("title", out var t) ? t.GetString() : null,
                     operations = ops,
                     risk_level = root.TryGetProperty("risk_level", out var r) ? r.GetString() : "Medium",
                     estimated_cost_note = root.TryGetProperty("estimated_cost_note", out var e) && e.ValueKind != JsonValueKind.Null
                         ? e.GetString() : null,
+                    critic_verdict = criticFeedbackOverride ?? _planStore.GetCriticInfo(planGuid).verdict,
                     revision_count = revisionCount,
-                    session_id = _sessionId
+                    status,
+                    session_id     = _sessionId
                 });
             }
         }
     }
+
+    private IEnumerable<string> BuildQuestionEvents(string resultJson)
+    {
+        JsonDocument? doc = null;
+        try { doc = JsonDocument.Parse(ExtractJsonObject(resultJson)); }
+        catch { yield break; }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("question_id", out var questionIdEl))
+                yield break;
+
+            yield return Evt("question", new
+            {
+                question_id = questionIdEl.GetString(),
+                title = root.TryGetProperty("title", out var t) ? t.GetString() : "Clarify request",
+                prompt = root.TryGetProperty("prompt", out var p) ? p.GetString() : "",
+                options = root.TryGetProperty("options", out var o)
+                    ? JsonSerializer.Deserialize<object[]>(o.GetRawText())
+                    : Array.Empty<object>(),
+                default_value = root.TryGetProperty("default_value", out var d) ? d.GetString() : null,
+                allow_custom = !root.TryGetProperty("allow_custom", out var ac) || ac.GetBoolean(),
+                session_id = _sessionId
+            });
+        }
+    }
+
+    private static string ExtractJsonObject(string text)
+    {
+        var start = text.IndexOf('{');
+        var end = text.LastIndexOf('}');
+        return start >= 0 && end > start
+            ? text[start..(end + 1)]
+            : text;
+    }
+
+    private static (string? errorType, string? message) SummarizeResult(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(ExtractJsonObject(json));
+            var root = doc.RootElement;
+            var errorType = root.TryGetProperty("error_type", out var et) ? et.GetString() : null;
+            var message = root.TryGetProperty("message", out var msg) ? msg.GetString() : null;
+            return (errorType, message);
+        }
+        catch { return (null, null); }
+    }
+
+    private static string Preview(string value)
+    {
+        const int max = 900;
+        var redacted = Redact(value);
+        return redacted.Length <= max ? redacted : redacted[..max] + "…";
+    }
+
+    private static string Redact(string value) =>
+        System.Text.RegularExpressions.Regex.Replace(
+            value,
+            "(?i)(pat|token|key|secret|authorization|connectionstring|connection_string)(\"?\\s*[:=]\\s*\"?)[^\",}\\s]+",
+            "$1$2[redacted]");
+
+    private static string ActivityStartSummary(string toolName) => $"{ToolDisplayName(toolName)} started";
+    private static string ActivityEndSummary(string toolName) => $"{ToolDisplayName(toolName)} completed";
+
+    private static string ToolDisplayName(string toolName) => toolName switch
+    {
+        "investigate_infrastructure" => "Investigator",
+        "plan_deployment" => "Planner",
+        "critique_plan" => "Critic",
+        "ask_clarifying_question" => "Questioner",
+        "execute_plan" => "Executor",
+        "reflect_on_deployment" => "Reflector",
+        _ => toolName
+    };
 
     /// <summary>Maps sub-agent tool names to AgentRegistry agent names for model lookup.</summary>
     private static string ToolNameToAgentName(string toolName) => toolName switch
@@ -263,6 +394,7 @@ public sealed class SseEventTranslator
         "investigate_infrastructure" => "investigator",
         "plan_deployment"            => "planner",
         "critique_plan"              => "critic",
+        "ask_clarifying_question"    => "questioner",
         "execute_plan"               => "executor",
         "reflect_on_deployment"      => "reflector",
         _                            => toolName

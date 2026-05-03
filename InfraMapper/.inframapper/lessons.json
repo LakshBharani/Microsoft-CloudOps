@@ -1,0 +1,58 @@
+[
+  {
+    "id": "34fe0cb2-a858-457e-a083-f09a016145c3",
+    "timestamp": "2026-05-03T05:07:03.498322+00:00",
+    "intentSummary": "Deploy multi-resource application infrastructure to eastus: resource group, App Service Plan, Web App, Storage Account, and Log Analytics workspace",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.OperationalInsights/workspaces"
+    ],
+    "whatFailed": "Deployment failed with HTTP 404 SubscriptionNotFound error during API execution, despite valid template and passing all pre-deployment validation checks. Indicates authentication/subscription context issue at execution time.",
+    "recommendation": "Before executing a validated deployment plan, verify the Azure subscription context is active and accessible: confirm subscription ID matches the intended target, validate service principal or user account has Contributor/Owner role on the subscription, and test Azure CLI/SDK authentication with \u0060az account show\u0060 or equivalent. Include subscription context validation as a pre-execution gate, separate from template validation, to catch authentication drift before resource provisioning begins."
+  },
+  {
+    "id": "fd9539a3-719a-44ab-827e-1df2164bbf1e",
+    "timestamp": "2026-05-03T05:52:17.602845+00:00",
+    "intentSummary": "Deploy App Service with web app, storage account, and Log Analytics workspace to eastus region with security and cost optimization",
+    "appliesTo": [
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.OperationalInsights/workspaces",
+      "Microsoft.Resources/resourceGroups"
+    ],
+    "whatFailed": "null",
+    "recommendation": "Storage account names must be lowercase alphanumeric only (no hyphens), max 24 characters. Apply security defaults: enforce HTTPS-only, require TLS 1.2 minimum, and disable public blob access on all storage accounts. Omit Application Insights configuration if instrumentationkey is not used to prevent empty environment variable runtime errors. Use dependency chains in correct order: RG tags first, then storage/logging/compute in parallel, then dependent applications. Tag resource groups at creation time (env=staging, etc.) for cost allocation and governance."
+  },
+  {
+    "id": "ebeacc8f-0ddb-4c20-bfcc-80d30b894754",
+    "timestamp": "2026-05-03T06:09:35.785308+00:00",
+    "intentSummary": "Delete resource group \u0027my-app-rg\u0027 and all contained resources in East US",
+    "appliesTo": [
+      "Microsoft.Web/sites",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.OperationalInsights/workspaces",
+      "Microsoft.Resources/resourceGroups"
+    ],
+    "whatFailed": "null",
+    "recommendation": "When deleting resource groups with multiple dependencies, explicitly sequence deletions to prevent conflicts: delete child resources with dependencies first (e.g., Web Apps before App Service Plans), then individual resources before the resource group itself. Document soft-delete retention periods (e.g., Log Analytics 14-day retention) to enable recovery windows before permanent deletion. This approach ensures clean deletions and provides recovery options if deletion was unintended."
+  },
+  {
+    "id": "5ca18029-4b57-437e-abec-e2dbf0f58c23",
+    "timestamp": "2026-05-03T06:24:37.057358+00:00",
+    "intentSummary": "Deploy multi-tier app infrastructure (App Service Plan, Web App, Storage Account, Log Analytics) to eastus region",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.OperationalInsights/workspaces"
+    ],
+    "whatFailed": "Storage account name auto-corrected from \u0022teststorageeastusa-01\u0022 to \u0022teststorageeastusa01\u0022; hyphens were stripped during provisioning",
+    "recommendation": "Storage account names must be lowercase alphanumeric only, maximum 24 characters; hyphens, underscores, and other special characters are not allowed. Validate storage account names against this pattern before template submission to avoid auto-correction and maintain predictable resource naming."
+  }
+]

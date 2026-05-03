@@ -81,3 +81,12 @@ export async function rejectPlan(planId: string): Promise<void> {
   const res = await fetch(`${BASE}/api/agent/plan/${planId}/reject`, { method: "POST" });
   if (!res.ok) throw new Error(`Reject failed: ${res.statusText}`);
 }
+
+export async function answerQuestion(questionId: string, sessionId: string, answer: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/agent/question/${questionId}/answer?sessionId=${sessionId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answer }),
+  });
+  if (!res.ok) throw new Error(`Question answer failed: ${res.statusText}`);
+}
