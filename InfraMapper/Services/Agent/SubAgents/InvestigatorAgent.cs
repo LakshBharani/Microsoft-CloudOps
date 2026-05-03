@@ -29,10 +29,10 @@ public sealed class InvestigatorAgent
     }
 
     /// <summary>Builds the InvestigatorAgent and its "investigate_infrastructure" AgentTool.</summary>
-    public (AnthropicAgent Agent, AgentTool Function) Build()
+    public (AnthropicAgent Agent, AgentTool Function) Build(AgentTool? clarificationTool = null)
     {
         var tools = new InvestigatorTools(_resourceService, _genericResources);
-        var agentTools = BuildAgentTools(tools);
+        var agentTools = BuildAgentTools(tools, clarificationTool);
 
         var agent = new AnthropicAgent(
             _client,
@@ -74,9 +74,9 @@ public sealed class InvestigatorAgent
         catch { return "Investigate the infrastructure."; }
     }
 
-    private static IList<AgentTool> BuildAgentTools(InvestigatorTools tools)
+    private static IList<AgentTool> BuildAgentTools(InvestigatorTools tools, AgentTool? clarificationTool)
     {
-        return
+        List<AgentTool> toolsList =
         [
             AgentToolFactory.Create(tools.GetInfrastructureGraphAsync,
                 "get_infrastructure_graph",
@@ -85,6 +85,9 @@ public sealed class InvestigatorAgent
                 "get_resource",
                 "Get details of a specific Azure resource by ARM ID."),
         ];
+        if (clarificationTool is not null)
+            toolsList.Add(clarificationTool);
+        return toolsList;
     }
 
     private const string SystemPrompt = """
@@ -105,6 +108,8 @@ public sealed class InvestigatorAgent
         • Do NOT include resources unrelated to the investigation focus.
         • Keep the summary concise — the Planner will use it, so signal what matters, not raw JSON.
         • If a query returns a transient error, retry once before reporting failure.
+        • If investigation is blocked by a human choice, call ask_clarifying_question and then
+          output ONLY its raw JSON result. Do not ask user-facing questions in prose.
         • Your final response is the investigation summary text. No raw JSON in the final response.
         • Do NOT use emojis.
         """;

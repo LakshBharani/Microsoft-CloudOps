@@ -22,10 +22,10 @@ public sealed class ReflectorAgent
     }
 
     /// <summary>Builds the ReflectorAgent and its "reflect_on_deployment" AgentTool.</summary>
-    public (AnthropicAgent Agent, AgentTool Function) Build()
+    public (AnthropicAgent Agent, AgentTool Function) Build(AgentTool? clarificationTool = null)
     {
         var tools = new ReflectorTools(_lessonsStore);
-        var agentTools = BuildAgentTools(tools);
+        var agentTools = BuildAgentTools(tools, clarificationTool);
 
         var agent = new AnthropicAgent(
             _client,
@@ -64,14 +64,17 @@ public sealed class ReflectorAgent
         catch { return "Reflect on the deployment."; }
     }
 
-    private static IList<AgentTool> BuildAgentTools(ReflectorTools tools)
+    private static IList<AgentTool> BuildAgentTools(ReflectorTools tools, AgentTool? clarificationTool)
     {
-        return
+        List<AgentTool> toolsList =
         [
             AgentToolFactory.Create(tools.WriteLesson,
                 "write_lesson",
                 "Write a lesson learned from this deployment to persistent memory."),
         ];
+        if (clarificationTool is not null)
+            toolsList.Add(clarificationTool);
+        return toolsList;
     }
 
     private const string SystemPrompt = """
@@ -99,6 +102,8 @@ public sealed class ReflectorAgent
         • You MUST call write_lesson. No exceptions, even for fully successful deployments
           (a lesson about what worked is still valuable).
         • After write_lesson returns, output ONLY its raw JSON result as your final response.
+        • If a human answer is required to record a meaningful lesson, call ask_clarifying_question
+          and then output ONLY its raw JSON result. Do not ask in prose.
         • Do NOT use emojis.
         """;
 }

@@ -57,6 +57,9 @@ export interface ClarifyingQuestion {
   options: ClarifyingQuestionOption[];
   defaultValue?: string;
   allowCustom: boolean;
+  category?: string;
+  confirmationScope?: string;
+  originatingAgent?: string;
   status?: "pending" | "answered";
   answer?: string;
 }
@@ -153,4 +156,4 @@ export type AgentStreamEvent =
   | { type: "agent_result"; data: { agent: string; success: boolean; iteration: number; input_tokens: number; output_tokens: number; session_id: string } }
   | { type: "activity_start"; data: { id: string; parent_id?: string | null; kind: AgentActivityItem["kind"]; agent?: string | null; tool?: string | null; model?: string | null; status: AgentActivityItem["status"]; summary: string; detail_preview?: string | null; error_type?: string | null; message?: string | null; session_id: string } }
   | { type: "activity_end"; data: { id: string; parent_id?: string | null; kind?: AgentActivityItem["kind"]; agent?: string | null; tool?: string | null; model?: string | null; status: AgentActivityItem["status"]; summary: string; detail_preview?: string | null; error_type?: string | null; message?: string | null; session_id: string } }
-  | { type: "question"; data: { question_id: string; title: string; prompt: string; options: ClarifyingQuestionOption[]; default_value?: string | null; allow_custom: boolean; session_id: string } };
+  | { type: "question"; data: { question_id: string; title: string; prompt: string; options: ClarifyingQuestionOption[]; default_value?: string | null; allow_custom: boolean; category?: string | null; confirmation_scope?: string | null; originating_agent?: string | null; session_id: string } };

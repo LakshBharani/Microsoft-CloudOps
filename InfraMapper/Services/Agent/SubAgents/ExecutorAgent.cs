@@ -38,13 +38,16 @@ public sealed class ExecutorAgent
     }
 
     /// <summary>Builds the ExecutorAgent and its "execute_plan" AgentTool for the given session.</summary>
-    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(string sessionId, string subscriptionId)
+    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(
+        string sessionId,
+        string subscriptionId,
+        AgentTool? clarificationTool = null)
     {
         var tools = new ExecutorTools(
             _deploymentService, _approvalService, _mutationApprovals,
             _genericResources, _planStore, sessionId, subscriptionId);
 
-        var agentTools = BuildAgentTools(tools);
+        var agentTools = BuildAgentTools(tools, clarificationTool);
 
         var agent = new AnthropicAgent(
             _client,
@@ -84,9 +87,9 @@ public sealed class ExecutorAgent
         catch { return "Execute the approved plan."; }
     }
 
-    private static IList<AgentTool> BuildAgentTools(ExecutorTools tools)
+    private static IList<AgentTool> BuildAgentTools(ExecutorTools tools, AgentTool? clarificationTool)
     {
-        return
+        List<AgentTool> toolsList =
         [
             AgentToolFactory.Create(tools.GetPlanDetails,
                 "get_plan_details",
@@ -101,6 +104,9 @@ public sealed class ExecutorAgent
                 "get_deployment_status",
                 "Get the status of an Azure deployment by name."),
         ];
+        if (clarificationTool is not null)
+            toolsList.Add(clarificationTool);
+        return toolsList;
     }
 
     private const string SystemPrompt = """
@@ -141,6 +147,8 @@ public sealed class ExecutorAgent
         • Never use plan_id as subscription_id or inside /subscriptions/{...} resource IDs.
         • Your final response MUST be the raw JSON result of the last tool call. No other text.
         • Never call write tools without a valid approved plan_id.
+        • If execution is blocked by a human choice or safety confirmation, call
+          ask_clarifying_question and then output ONLY its raw JSON result. Do not ask in prose.
         • Do NOT use emojis.
         """;
 }

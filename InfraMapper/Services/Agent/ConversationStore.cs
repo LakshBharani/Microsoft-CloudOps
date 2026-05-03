@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Anthropic;
 using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.SubAgents;
@@ -26,6 +27,7 @@ public sealed class ConversationStore
     private readonly IResourceMutationApprovalService _mutationApprovals;
     private readonly IArmGenericResourceService _genericResources;
     private readonly PlanStore _planStore;
+    private readonly QuestionStore _questionStore;
     private readonly AnthropicClient _anthropicClient;
     private readonly InvestigatorAgent _investigatorAgent;
     private readonly PlannerAgent _plannerAgent;
@@ -42,6 +44,7 @@ public sealed class ConversationStore
         IResourceMutationApprovalService mutationApprovals,
         IArmGenericResourceService genericResources,
         PlanStore planStore,
+        QuestionStore questionStore,
         AnthropicClient anthropicClient,
         InvestigatorAgent investigatorAgent,
         PlannerAgent plannerAgent,
@@ -57,6 +60,7 @@ public sealed class ConversationStore
         _mutationApprovals = mutationApprovals;
         _genericResources = genericResources;
         _planStore = planStore;
+        _questionStore = questionStore;
         _anthropicClient = anthropicClient;
         _investigatorAgent = investigatorAgent;
         _plannerAgent = plannerAgent;
@@ -86,12 +90,18 @@ public sealed class ConversationStore
             sessionId, _loggerFactory.CreateLogger<OrchestratorTools>());
 
         // Build sub-agents for this session and get their agent-tool functions.
-        var (_, investigateFn)    = _investigatorAgent.Build();
-        var (_, planDeploymentFn) = _plannerAgent.BuildForSession(sessionId);
-        var (_, critiquePlanFn)   = _criticAgent.BuildForSession();
-        var (_, questionFn)       = _questionerAgent.BuildForSession(sessionId);
-        var (_, executePlanFn)    = _executorAgent.BuildForSession(sessionId, subscriptionId);
-        var (_, reflectFn)        = _reflectorAgent.Build();
+        var questionFn             = _questionerAgent.BuildFunctionForSession(sessionId, "orchestrator");
+        var investigatorQuestionFn = _questionerAgent.BuildFunctionForSession(sessionId, "investigator");
+        var plannerQuestionFn      = _questionerAgent.BuildFunctionForSession(sessionId, "planner");
+        var criticQuestionFn       = _questionerAgent.BuildFunctionForSession(sessionId, "critic");
+        var executorQuestionFn     = _questionerAgent.BuildFunctionForSession(sessionId, "executor");
+        var reflectorQuestionFn    = _questionerAgent.BuildFunctionForSession(sessionId, "reflector");
+
+        var (_, investigateFn)    = _investigatorAgent.Build(investigatorQuestionFn);
+        var (_, planDeploymentFn) = _plannerAgent.BuildForSession(sessionId, plannerQuestionFn);
+        var (_, critiquePlanFn)   = _criticAgent.BuildForSession(clarificationTool: criticQuestionFn);
+        var (_, executePlanFn)    = _executorAgent.BuildForSession(sessionId, subscriptionId, executorQuestionFn);
+        var (_, reflectFn)        = _reflectorAgent.Build(reflectorQuestionFn);
 
         var agentTools = BuildAgentTools(orcTools, investigateFn, planDeploymentFn, critiquePlanFn, questionFn, executePlanFn, reflectFn);
         var model = AgentRegistry.GetModel("orchestrator");
@@ -137,12 +147,44 @@ public sealed class ConversationStore
     {
         if (!_sessions.TryGetValue(sessionId, out var entry)) return;
         entry.Session.TryGetValue<string>("pending_question_answer", out var existing);
-        var next = $"The user answered clarification question {questionId}: {answer}.";
+        var answerContext = _questionStore.GetAnswerContext(questionId);
+        var next = answerContext is null
+            ? $"The user answered clarification question {questionId}: {answer}."
+            : BuildClarificationResumeMessage(answerContext);
         entry.Session.SetValue(
             "pending_question_answer",
             string.IsNullOrWhiteSpace(existing)
                 ? $"{next} Continue planning with this answer. If the answer changes plan constraints, call plan_deployment again and critique the revised plan before presenting it."
                 : $"{existing}\n{next}");
+    }
+
+    private static string BuildClarificationResumeMessage(ClarifyingQuestionAnswerContext answer)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            question_id = answer.QuestionId,
+            originating_agent = answer.OriginatingAgent,
+            title = answer.Title,
+            prompt = answer.Prompt,
+            selected_value = answer.SelectedValue,
+            selected_label = answer.SelectedLabel,
+            selected_description = answer.SelectedDescription,
+            default_value = answer.DefaultValue,
+            category = answer.Category,
+            confirmation_scope = answer.ConfirmationScope,
+            is_scope_confirmation = answer.IsScopeConfirmation,
+            answered_at = answer.AnsweredAt
+        }, OrchestratorTools.SnakeCaseOpts);
+
+        return $"""
+            The user answered a structured clarification questionnaire.
+            Clarification answer context:
+            {payload}
+            Treat this answer as first-class plan context. If is_scope_confirmation is true,
+            it confirms the matching destructive scope for the current plan unless the plan expands scope.
+            Before asking another requires_user_choice question, compare the requested choice against
+            this existing clarification context.
+            """;
     }
 
     public string? ConsumePendingQuestionAnswer(string sessionId)
@@ -211,6 +253,25 @@ public sealed class ConversationStore
           (for example SKU/tier, destructive scope, region when not inferable, or mutually exclusive architecture).
           Ask after critique_plan only when the critic's feedback cannot be resolved safely without user intent.
 
+        ── QUESTIONNAIRE PROTOCOL ──────────────────────────────────────────────
+        All user-facing questions MUST be created with ask_clarifying_question so the UI
+        renders a questionnaire. Do NOT ask questions in plain prose. If your response
+        would ask the user to confirm, choose, provide exclusions, explain business intent,
+        or answer anything else before work can continue, call ask_clarifying_question
+        instead of replying with the question text.
+        All sub-agents also have access to ask_clarifying_question. If a sub-agent returns
+        question JSON or emits a questionnaire, STOP and wait for the user's answer before
+        continuing the current plan/execution path.
+
+        Broad destructive requests require a questionnaire before planning unless the user
+        already gave explicit scope, exclusions, and confirmation. Examples include:
+        delete all resource groups, delete a subscription's resources, delete production
+        workloads, or any request whose scope may remove many resources.
+        Structured clarification answers are first-class context. Scope-level confirmation
+        applies to every matching destructive operation in the current plan unless a later
+        plan expands the destructive scope. Do not ask for per-resource typed confirmation
+        when an existing scope-level answer already covers that operation.
+
         ── BLAST RADIUS ASSESSMENT ──────────────────────────────────────────────
         Before acting on any mutating request, assess blast radius:
 
@@ -255,13 +316,18 @@ public sealed class ConversationStore
 
           HIGH path:
           PHASE A:
-          1. Optionally call investigate_infrastructure if context is needed.
-          2. Call plan_deployment(intent, investigator_summary?).
-          3. Call critique_plan(plan_id).
+          1. If intent needs confirmation, scope, exclusions, or a business reason, call
+             ask_clarifying_question. STOP until the user answers through the questionnaire.
+          2. Optionally call investigate_infrastructure if context is needed.
+          3. Call plan_deployment(intent, investigator_summary?). Include any structured
+             clarification answer context in the intent so Planner documents confirmation evidence.
+          4. Call critique_plan(plan_id).
              If approved:false, call plan_deployment again with feedback. Repeat at most ONCE more (2 total plan calls).
-             If still approved:false after 2 plan calls, call ask_clarifying_question with the rejection reason
-             if a user choice can unblock the plan; otherwise output the rejection reason.
-          4. Once approved:true, output a concise plan summary. STOP.
+             If feedback includes requires_user_choice, first compare it with existing structured
+             clarification context. If already covered, re-plan/re-critique with the documented
+             confirmation evidence. If not covered and a user choice can unblock the plan, call
+             ask_clarifying_question; otherwise output the rejection reason.
+          5. Once approved:true, output a concise plan summary. STOP.
           PHASE B: On approval signal → call execute_plan(plan_id).
                    If needs_replan:true, re-plan once, critique once, then execute.
                    Call reflect_on_deployment.

@@ -85,7 +85,7 @@ public sealed class AgentController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(request.Answer))
             return BadRequest(new { error = "Answer is required." });
-        if (!_questionStore.TryAnswer(questionId, request.Answer, out var error))
+        if (!_questionStore.TryAnswer(questionId, request.Answer, out _, out var error))
             return BadRequest(new { error });
 
         _agentService.ResumeAfterQuestionAnswer(sessionId, questionId, request.Answer);

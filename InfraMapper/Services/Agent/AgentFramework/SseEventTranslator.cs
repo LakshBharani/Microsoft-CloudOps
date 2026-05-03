@@ -41,6 +41,7 @@ public sealed class SseEventTranslator
     // Phase 3: plan event buffering for silent retry UX.
     private string? _bufferedPlanResultJson;  // raw result JSON from plan_deployment; null until buffered
     private int _planRevisionCount;           // incremented each time Critic rejects
+    private readonly HashSet<string> _emittedQuestionIds = new(StringComparer.OrdinalIgnoreCase);
 
     public SseEventTranslator(string sessionId, PlanStore planStore, bool autoApprovePlan)
     {
@@ -139,6 +140,14 @@ public sealed class SseEventTranslator
                         });
                     }
 
+                    if (IsQuestionResult(resultStr))
+                    {
+                        foreach (var e in BuildQuestionEvents(resultStr))
+                            yield return e;
+                        _bufferedPlanResultJson = null;
+                        break;
+                    }
+
                     // Buffer plan events from plan_deployment (Phase 2) or create_plan (Phase 0/1 fallback).
                     // The plan SSE event is held until the Critic approves or the stream ends.
                     if ((toolName == "plan_deployment" || toolName == "create_plan") && !isError)
@@ -201,7 +210,7 @@ public sealed class SseEventTranslator
 
         // If a plan was buffered but never critiqued (Phase 0/1 compatibility or auto-approve path),
         // emit it now at end of stream.
-        if (_bufferedPlanResultJson is not null)
+        if (_bufferedPlanResultJson is not null && _emittedQuestionIds.Count == 0)
         {
             foreach (var evt in EmitBufferedPlan())
                 yield return evt;
@@ -323,10 +332,13 @@ public sealed class SseEventTranslator
             var root = doc.RootElement;
             if (!root.TryGetProperty("question_id", out var questionIdEl))
                 yield break;
+            var questionId = questionIdEl.GetString();
+            if (string.IsNullOrWhiteSpace(questionId) || !_emittedQuestionIds.Add(questionId))
+                yield break;
 
             yield return Evt("question", new
             {
-                question_id = questionIdEl.GetString(),
+                question_id = questionId,
                 title = root.TryGetProperty("title", out var t) ? t.GetString() : "Clarify request",
                 prompt = root.TryGetProperty("prompt", out var p) ? p.GetString() : "",
                 options = root.TryGetProperty("options", out var o)
@@ -334,9 +346,22 @@ public sealed class SseEventTranslator
                     : Array.Empty<object>(),
                 default_value = root.TryGetProperty("default_value", out var d) ? d.GetString() : null,
                 allow_custom = !root.TryGetProperty("allow_custom", out var ac) || ac.GetBoolean(),
+                category = root.TryGetProperty("category", out var cat) ? cat.GetString() : null,
+                confirmation_scope = root.TryGetProperty("confirmation_scope", out var scope) ? scope.GetString() : null,
+                originating_agent = root.TryGetProperty("originating_agent", out var origin) ? origin.GetString() : null,
                 session_id = _sessionId
             });
         }
+    }
+
+    private static bool IsQuestionResult(string resultJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(ExtractJsonObject(resultJson));
+            return doc.RootElement.TryGetProperty("question_id", out _);
+        }
+        catch { return false; }
     }
 
     private static string ExtractJsonObject(string text)
@@ -355,7 +380,8 @@ public sealed class SseEventTranslator
             using var doc = JsonDocument.Parse(ExtractJsonObject(json));
             var root = doc.RootElement;
             var errorType = root.TryGetProperty("error_type", out var et) ? et.GetString() : null;
-            var message = root.TryGetProperty("message", out var msg) ? msg.GetString() : null;
+            var message = root.TryGetProperty("message", out var msg) ? msg.GetString() :
+                root.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.String ? err.GetString() : null;
             return (errorType, message);
         }
         catch { return (null, null); }
@@ -385,6 +411,7 @@ public sealed class SseEventTranslator
         "ask_clarifying_question" => "Questioner",
         "execute_plan" => "Executor",
         "reflect_on_deployment" => "Reflector",
+        "get_lessons" => "Lessons learned",
         _ => toolName
     };
 

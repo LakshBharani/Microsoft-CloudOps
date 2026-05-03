@@ -36,6 +36,7 @@ const TOOL_LABELS: Record<string, string> = {
   ask_clarifying_question: "Asking clarification",
   execute_plan: "Executing plan",
   reflect_on_deployment: "Reflecting on deployment",
+  get_lessons: "Referencing lessons learned",
 };
 
 const AGENT_LABELS: Record<string, string> = {
@@ -72,6 +73,21 @@ function cleanAgentText(value?: string) {
 function isOperationResult(content: string) {
   const normalized = cleanAgentText(content.replace(/\r/g, "")) ?? "";
   return /\b(complete|completed|succeeded|successfully|deleted|created|updated|deployed)\b/i.test(normalized);
+}
+
+function formatWorkedDuration(ms: number) {
+  const minutes = Math.max(1, Math.ceil(ms / 60000));
+  return `${minutes}m`;
+}
+
+function getWorkedDuration(msg: ChatMessage) {
+  if (msg.isStreaming || !msg.activities || msg.activities.length === 0) return null;
+
+  const startedAt = Math.min(...msg.activities.map((item) => item.startedAt ?? item.endedAt ?? Infinity));
+  const endedAt = Math.max(...msg.activities.map((item) => item.endedAt ?? item.startedAt ?? -Infinity));
+
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) return null;
+  return formatWorkedDuration(endedAt - startedAt);
 }
 
 function ToolCallList({ toolCalls }: { toolCalls: ToolCall[] }) {
@@ -118,7 +134,11 @@ function ActivityTimeline({ activities, defaultOpen = true }: { activities?: Age
   }
 
   function label(item: AgentActivityItem) {
-    return item.agent ? (AGENT_LABELS[item.agent] ?? item.agent) : item.tool ?? item.summary;
+    return item.agent
+      ? (AGENT_LABELS[item.agent] ?? item.agent)
+      : item.tool
+        ? (TOOL_LABELS[item.tool] ?? item.tool)
+        : item.summary;
   }
 
   return (
@@ -158,7 +178,7 @@ function ActivityTimeline({ activities, defaultOpen = true }: { activities?: Age
                         {child.model && (
                           <span className="ml-1 text-slate-600">· {formatModelName(child.model)}</span>
                         )}
-                        <span> — {child.message ?? child.summary}</span>
+                        <span className="ml-1 text-slate-500">{child.message ?? child.summary}</span>
                       </div>
                     </div>
                   ))}
@@ -187,6 +207,7 @@ function AgentMessage({
 }) {
   const richOpen = msg.richCollapsed !== true;
   const operationResult = msg.content ? isOperationResult(msg.content) : false;
+  const workedDuration = getWorkedDuration(msg);
 
   return (
     <div className="w-full space-y-2 rounded-lg border border-slate-800 bg-[#1e293b] px-3 py-2 text-xs leading-relaxed text-slate-200">
@@ -194,6 +215,9 @@ function AgentMessage({
         <Bot size={11} />
         <span>InfraMapper Agent</span>
         <span className="normal-case tracking-normal text-slate-500">· {formatModelName(ORCHESTRATOR_MODEL)}</span>
+        {workedDuration && (
+          <span className="ml-auto normal-case tracking-normal text-slate-500">Worked for {workedDuration}</span>
+        )}
       </div>
       <div className="break-words">
         <ActivityTimeline activities={msg.activities} defaultOpen={richOpen} />
@@ -222,7 +246,7 @@ function AgentMessage({
           <ReactMarkdown
             components={{
               p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-              ul: ({ children }) => <ul className="list-disc pl-4 mb-1">{children}</ul>,
+              ul: ({ children }) => <ul className="mb-1 space-y-0.5">{children}</ul>,
               ol: ({ children }) => <ol className="list-decimal pl-4 mb-1">{children}</ol>,
               li: ({ children }) => <li className="mb-0.5">{children}</li>,
               strong: ({ children }) => <strong className="text-white font-semibold">{children}</strong>,
@@ -435,6 +459,9 @@ export default function ChatPanel({
             options: evt.data.options,
             defaultValue: evt.data.default_value ?? undefined,
             allowCustom: evt.data.allow_custom,
+            category: evt.data.category ?? undefined,
+            confirmationScope: evt.data.confirmation_scope ?? undefined,
+            originatingAgent: evt.data.originating_agent ?? undefined,
             status: "pending",
           });
         } else if (evt.type === "activity_start") {
@@ -549,6 +576,9 @@ export default function ChatPanel({
             options: evt.data.options,
             defaultValue: evt.data.default_value ?? undefined,
             allowCustom: evt.data.allow_custom,
+            category: evt.data.category ?? undefined,
+            confirmationScope: evt.data.confirmation_scope ?? undefined,
+            originatingAgent: evt.data.originating_agent ?? undefined,
             status: "pending",
           });
         } else if (evt.type === "plan") {
@@ -653,6 +683,9 @@ export default function ChatPanel({
             options: evt.data.options,
             defaultValue: evt.data.default_value ?? undefined,
             allowCustom: evt.data.allow_custom,
+            category: evt.data.category ?? undefined,
+            confirmationScope: evt.data.confirmation_scope ?? undefined,
+            originatingAgent: evt.data.originating_agent ?? undefined,
             status: "pending",
           });
         } else if (evt.type === "activity_start") {

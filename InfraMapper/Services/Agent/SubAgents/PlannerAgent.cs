@@ -28,10 +28,10 @@ public sealed class PlannerAgent
     /// Builds a PlannerAgent + its "plan_deployment" AgentTool for the given session.
     /// Call once per ConversationStore session during session initialisation.
     /// </summary>
-    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(string sessionId)
+    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(string sessionId, AgentTool? clarificationTool = null)
     {
         var tools = new PlannerTools(_planStore, _lessonsStore, sessionId);
-        var agentTools = BuildAgentTools(tools);
+        var agentTools = BuildAgentTools(tools, clarificationTool);
 
         var agent = new AnthropicAgent(
             _client,
@@ -77,9 +77,9 @@ public sealed class PlannerAgent
 
     // ─── Internal tool wiring ────────────────────────────────────────────────
 
-    private static IList<AgentTool> BuildAgentTools(PlannerTools tools)
+    private static IList<AgentTool> BuildAgentTools(PlannerTools tools, AgentTool? clarificationTool)
     {
-        return
+        List<AgentTool> toolsList =
         [
             // Step 0 (optional): look up past lessons before drafting.
             AgentToolFactory.Create(tools.GetLessons,
@@ -94,6 +94,9 @@ public sealed class PlannerAgent
                 "create_plan",
                 "Create and register the final deployment plan after self-critique."),
         ];
+        if (clarificationTool is not null)
+            toolsList.Add(clarificationTool);
+        return toolsList;
     }
 
     // ─── System prompt ───────────────────────────────────────────────────────
@@ -142,6 +145,11 @@ public sealed class PlannerAgent
         CRITICAL RULES:
           • You MUST call record_critique BEFORE calling create_plan — no exceptions.
           • After create_plan returns, output ONLY its raw JSON as your final response. No other text.
+          • If a human choice is required, call ask_clarifying_question and then output ONLY
+            its raw JSON result. Do not continue planning until the user answers.
+          • Do NOT ask user-facing questions in prose.
+          • Include prior clarification evidence in destructive operation details so Critic can
+            verify scope-level confirmation without asking again.
           • Never skip steps or collapse them into one.
           • Always include ALL dependency resources in the operations list, even if the user didn't mention them.
           • Do NOT use emojis.

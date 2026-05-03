@@ -142,7 +142,7 @@ public sealed class AnthropicAgent
                         using var trace = AgentActivityTrace.Push();
                         resultJson = await tool.Invoke(inputJson, ct);
                         nestedEvents = trace.Events;
-                        success = !resultJson.Contains("\"error\":true");
+                        success = IsSuccessfulToolResult(resultJson);
                     }
                 }
                 catch (Exception ex)
@@ -193,7 +193,7 @@ public sealed class AnthropicAgent
         return finalText;
     }
 
-    private static IEnumerable<AgentStreamEvent.Activity> BuildNestedActivities(
+    private static IEnumerable<AgentStreamEvent> BuildNestedActivities(
         string parentCallId,
         List<AgentStreamEvent> events)
     {
@@ -218,6 +218,8 @@ public sealed class AnthropicAgent
                         tr.Success ? "success" : "failed",
                         tr.Success ? $"{tr.ToolName} completed" : $"{tr.ToolName} failed",
                         Preview(tr.ResultJson), errorType, message);
+                    if (tr.Success && string.Equals(tr.ToolName, "ask_clarifying_question", StringComparison.OrdinalIgnoreCase))
+                        yield return tr;
                     break;
                 }
             }
@@ -228,7 +230,7 @@ public sealed class AnthropicAgent
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(ExtractJsonObject(json));
             var root = doc.RootElement;
             var errorType = root.TryGetProperty("error_type", out var et) ? et.GetString() : null;
             var message = root.TryGetProperty("message", out var msg) ? msg.GetString() :
@@ -236,6 +238,86 @@ public sealed class AnthropicAgent
             return (errorType, message);
         }
         catch { return (null, null); }
+    }
+
+    private static bool IsSuccessfulToolResult(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(ExtractJsonObject(json));
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return true;
+
+            if (TryGetProperty(root, "success", out var successEl) && successEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                return successEl.GetBoolean();
+
+            if (TryGetProperty(root, "succeeded", out var succeededEl) && succeededEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                return succeededEl.GetBoolean();
+
+            if (TryGetProperty(root, "needs_replan", out var needsReplanEl) && needsReplanEl.ValueKind == JsonValueKind.True)
+                return false;
+
+            if (TryGetProperty(root, "error_type", out var errorTypeEl) &&
+                errorTypeEl.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(errorTypeEl.GetString()))
+                return false;
+
+            if (TryGetProperty(root, "error", out var errorEl) && IsErrorValue(errorEl))
+                return false;
+
+            if (TryGetStatusCode(root, out var statusCode) && statusCode >= 400)
+                return false;
+
+            return true;
+        }
+        catch
+        {
+            return !json.Contains("\"error\":true", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static bool IsErrorValue(JsonElement errorEl) => errorEl.ValueKind switch
+    {
+        JsonValueKind.True => true,
+        JsonValueKind.Object => true,
+        JsonValueKind.String => !string.IsNullOrWhiteSpace(errorEl.GetString()),
+        _ => false
+    };
+
+    private static bool TryGetStatusCode(JsonElement root, out int statusCode)
+    {
+        foreach (var name in new[] { "http_status", "httpStatus", "status", "Status" })
+        {
+            if (TryGetProperty(root, name, out var statusEl) && statusEl.TryGetInt32(out statusCode))
+                return true;
+        }
+
+        statusCode = 0;
+        return false;
+    }
+
+    private static bool TryGetProperty(JsonElement root, string name, out JsonElement value)
+    {
+        foreach (var property in root.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string ExtractJsonObject(string text)
+    {
+        var start = text.IndexOf('{');
+        var end = text.LastIndexOf('}');
+        return start >= 0 && end > start
+            ? text[start..(end + 1)]
+            : text;
     }
 
     private static string Preview(string value)

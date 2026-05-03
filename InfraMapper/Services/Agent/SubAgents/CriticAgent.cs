@@ -26,10 +26,10 @@ public sealed class CriticAgent
     /// Builds the CriticAgent + its "critique_plan" AgentTool.
     /// <paramref name="revisionCount"/> is the number of prior revision cycles for this session.
     /// </summary>
-    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(int revisionCount = 0)
+    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(int revisionCount = 0, AgentTool? clarificationTool = null)
     {
         var tools = new CriticTools(_planStore, revisionCount);
-        var agentTools = BuildAgentTools(tools);
+        var agentTools = BuildAgentTools(tools, clarificationTool);
 
         var agent = new AnthropicAgent(
             _client,
@@ -68,9 +68,9 @@ public sealed class CriticAgent
         catch { return "Critique the current plan."; }
     }
 
-    private static IList<AgentTool> BuildAgentTools(CriticTools tools)
+    private static IList<AgentTool> BuildAgentTools(CriticTools tools, AgentTool? clarificationTool)
     {
-        return
+        List<AgentTool> toolsList =
         [
             AgentToolFactory.Create(tools.GetPlanDetails,
                 "get_plan_details",
@@ -79,6 +79,9 @@ public sealed class CriticAgent
                 "record_verdict",
                 "Record the critic verdict (approved/rejected) with detailed feedback."),
         ];
+        if (clarificationTool is not null)
+            toolsList.Add(clarificationTool);
+        return toolsList;
     }
 
     private const string SystemPrompt = """
@@ -151,6 +154,10 @@ public sealed class CriticAgent
           record_verdict. No other text.
         • For delete-only plans: be fast and permissive — only block on the two checks above.
         • For create/update plans: be strict. A plan that might work is not good enough.
+        • Accept matching scope-level confirmation evidence in operation details; do not demand
+          per-resource typed confirmation when the prior answer covers the same destructive scope.
+        • If a human choice is required and no matching confirmation evidence exists, call
+          ask_clarifying_question and then output ONLY its raw JSON result. Do not ask in prose.
         • Do NOT use emojis.
         """;
 }
