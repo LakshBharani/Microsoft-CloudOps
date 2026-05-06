@@ -1,9 +1,5 @@
 namespace InfraMapper.Models.Agent;
 
-/// <summary>
-/// Emitted as SSE event type "agent_call" when an Orchestrator invokes a sub-agent.
-/// Additive — existing frontend ignores unknown event types safely.
-/// </summary>
 public sealed class AgentCallEvent
 {
     public required string Agent { get; init; }
@@ -13,9 +9,6 @@ public sealed class AgentCallEvent
     public required string SessionId { get; init; }
 }
 
-/// <summary>
-/// Emitted as SSE event type "agent_result" when a sub-agent finishes.
-/// </summary>
 public sealed class AgentResultEvent
 {
     public required string Agent { get; init; }

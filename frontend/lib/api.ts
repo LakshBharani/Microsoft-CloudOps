@@ -41,13 +41,18 @@ export async function* streamChat(
   }
 }
 
-export async function loadDesiredState(cfg: import("../components/DevOpsSettings").DevOpsConfig): Promise<import("./types").DesiredStateSpec> {
+async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
+  const body = await res.text().catch(() => "");
+  return new Error(body ? `${prefix}: ${body}` : `${prefix}: ${res.statusText}`);
+}
+
+export async function loadDesiredState(cfg: import("../components/DevOpsSettings").DevOpsConfig): Promise<unknown> {
   const params = new URLSearchParams({
     orgUrl: cfg.orgUrl, project: cfg.project, repository: cfg.repository,
     pat: cfg.pat, branch: cfg.branch, filePath: cfg.filePath,
   });
   const res = await fetch(`${BASE}/api/desiredstate?${params}`);
-  if (!res.ok) throw new Error(`Load failed: ${res.statusText}`);
+  if (!res.ok) throw await errorFromResponse("Load failed", res);
   return res.json();
 }
 
@@ -57,7 +62,7 @@ export async function saveDesiredState(cfg: import("../components/DevOpsSettings
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...cfg, rawJson, commitMessage }),
   });
-  if (!res.ok) throw new Error(`Save failed: ${res.statusText}`);
+  if (!res.ok) throw await errorFromResponse("Save failed", res);
 }
 
 export async function diffInfra(subscriptionId: string, desired: import("./types").DesiredStateSpec): Promise<import("./types").DiffResult> {
@@ -66,7 +71,7 @@ export async function diffInfra(subscriptionId: string, desired: import("./types
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(desired),
   });
-  if (!res.ok) throw new Error(`Diff failed: ${res.statusText}`);
+  if (!res.ok) throw await errorFromResponse("Diff failed", res);
   return res.json();
 }
 

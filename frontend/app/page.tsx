@@ -23,8 +23,25 @@ const DEFAULT_DEVOPS_CONFIG: DevOpsConfig = {
   filePath: "infra/desired-state.json"
 };
 
+function makeId(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  if (globalThis.crypto?.getRandomValues) {
+    return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+      (
+        Number(c) ^
+        (globalThis.crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))
+      ).toString(16)
+    );
+  }
+
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function makeSession(n: number): Session {
-  return { id: crypto.randomUUID(), name: `Session ${n}`, createdAt: Date.now() };
+  return { id: makeId(), name: `Session ${n}`, createdAt: Date.now() };
 }
 
 export default function Home() {

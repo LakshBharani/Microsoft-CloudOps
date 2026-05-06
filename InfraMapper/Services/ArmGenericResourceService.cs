@@ -227,9 +227,6 @@ public sealed class ArmGenericResourceService : IArmGenericResourceService
         };
     }
 
-    /// <summary>
-    /// SDK types like <see cref="ResourcesSku"/> use custom JSON contracts; <see cref="JsonSerializer"/> does not populate them, which produced empty sku payloads to ARM.
-    /// </summary>
     private static bool TryParseResourcesSku(string skuJson, out ResourcesSku? sku, out string? error)
     {
         sku = null;

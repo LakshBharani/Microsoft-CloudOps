@@ -8,6 +8,5 @@ public class DependencyEdge
     public string DependencyType { get; set; }
     // Examples: "network", "compute", "data", "identity"
 
-    /// <summary>Relative risk contribution for this edge’s dependency class (0–1 scale).</summary>
     public double RiskWeight { get; set; }
 }

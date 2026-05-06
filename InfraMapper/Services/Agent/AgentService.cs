@@ -86,10 +86,6 @@ public sealed class AgentService
             yield return evt;
     }
 
-    /// <summary>
-    /// Called by the plan-approve endpoint after the user clicks Approve in the UI.
-    /// Stores a resume message in the session StateBag; the next StreamAsync call picks it up.
-    /// </summary>
     public void ResumeAfterPlanApproval(string sessionId, Guid planId) =>
         _store.SetPendingApproval(sessionId, planId);
 

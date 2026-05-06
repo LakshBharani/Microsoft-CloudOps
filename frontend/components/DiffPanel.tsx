@@ -13,6 +13,25 @@ const STATUS_STYLES = {
   unchanged: { label: "OK", badge: "bg-slate-800 border-slate-600 text-slate-400", dot: "bg-slate-500" },
 };
 
+function starterIntentJson(subscriptionId: string) {
+  return JSON.stringify({
+    schemaVersion: "1.0",
+    intent: "Create a demo web app backed by storage.",
+    scope: {
+      subscriptionId: subscriptionId || "<subscription-id>",
+      resourceGroup: "rg-im-demo",
+      location: "eastus",
+    },
+    components: [
+      { kind: "storageAccount", name: "stimdemo001", replication: "LRS", publicAccess: false },
+      { kind: "webApp", name: "app-im-demo", runtime: "dotnet", sku: "B1" },
+    ],
+    constraints: {
+      tags: { owner: "cloudops", env: "demo" },
+    },
+  }, null, 2);
+}
+
 function DiffSection({
   title,
   nodes,
@@ -98,7 +117,16 @@ export default function DiffPanel({ subscriptionId, onDiff, onApply, onClose, on
       setEditorValue(json);
       setShowEditor(true);
       setAdoStatus("Loaded from Azure DevOps.");
-    } catch (e) { setAdoError((e as Error).message); }
+    } catch (e) {
+      const message = (e as Error).message;
+      if (message.includes("File not found in repository")) {
+        setEditorValue(starterIntentJson(subscriptionId));
+        setShowEditor(true);
+        setAdoStatus(`No file at ${devOpsConfig.filePath} on ${devOpsConfig.branch}. Starter loaded; Save to DevOps will create it.`);
+      } else {
+        setAdoError(message);
+      }
+    }
     finally { setAdoLoading(false); }
   }
 
@@ -205,7 +233,7 @@ export default function DiffPanel({ subscriptionId, onDiff, onApply, onClose, on
             <textarea
               value={editorValue}
               onChange={(e) => setEditorValue(e.target.value)}
-              placeholder={`{\n  "nodes": [\n    {\n      "name": "my-storage",\n      "type": "Microsoft.Storage/storageAccounts",\n      "resourceGroup": "my-rg",\n      "location": "eastus"\n    }\n  ],\n  "edges": []\n}`}
+              placeholder={starterIntentJson(subscriptionId)}
               rows={8}
               className="w-full bg-[#0f1117] border border-slate-700 rounded px-3 py-2 text-[11px] text-slate-300 font-mono resize-none outline-none focus:border-blue-500"
             />

@@ -3,11 +3,6 @@ using Anthropic.Models.Messages;
 
 namespace InfraMapper.Services.Agent.AgentFramework;
 
-/// <summary>
-/// Holds conversation history for one agent session.
-/// History is a list of <see cref="MessageParam"/> objects that grow as the conversation progresses.
-/// Also provides a generic state bag for session-scoped values (e.g. pending plan approvals).
-/// </summary>
 public sealed class AnthropicAgentSession
 {
     public List<MessageParam> History { get; } = new();

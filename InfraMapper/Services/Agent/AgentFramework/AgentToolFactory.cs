@@ -5,10 +5,6 @@ using System.Text.Json;
 
 namespace InfraMapper.Services.Agent.AgentFramework;
 
-/// <summary>
-/// Builds <see cref="AgentTool"/> instances from C# delegates using reflection.
-/// Mirrors the AIFunctionFactory.Create pattern but targets the Anthropic SDK tool format.
-/// </summary>
 public static class AgentToolFactory
 {
     private static readonly JsonSerializerOptions ToolJsonOptions = new()
@@ -17,9 +13,6 @@ public static class AgentToolFactory
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
     };
 
-    /// <summary>
-    /// Creates an <see cref="AgentTool"/> from a delegate by reflecting its parameters.
-    /// </summary>
     public static AgentTool Create(Delegate method, string name, string description)
     {
         var mi = method.Method;

@@ -18,7 +18,6 @@ public class DesiredStateController : ControllerBase
         _diff = diff;
     }
 
-    /// <summary>Load desired-state.json from the Azure DevOps repo.</summary>
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] string orgUrl, [FromQuery] string project,
         [FromQuery] string repository, [FromQuery] string pat,
@@ -35,7 +34,6 @@ public class DesiredStateController : ControllerBase
         catch (Exception ex) { return BadRequest(ex.Message); }
     }
 
-    /// <summary>Save desired-state.json to the Azure DevOps repo verbatim.</summary>
     [HttpPut]
     public async Task<IActionResult> Put([FromBody] SaveDesiredStateRequest req, CancellationToken ct)
     {

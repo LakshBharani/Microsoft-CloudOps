@@ -21,7 +21,6 @@ public class InfraController : ControllerBase
         return Ok("Infra API working");
     }
 
-    /// <summary>Topology only: slim nodes (id, name, type, location, resourceGroup) and edges.</summary>
     [HttpGet("graph")]
     public async Task<ActionResult<InfrastructureGraphSummary>> GetGraph([FromQuery] string? subscriptionId)
     {
@@ -32,7 +31,6 @@ public class InfraController : ControllerBase
         return Ok(summary);
     }
 
-    /// <summary>Full inventory: nodes include tags, properties, sku, kind from Resource Graph, plus edges.</summary>
     [HttpGet]
     public async Task<ActionResult<InfrastructureGraph>> GetFullInventory([FromQuery] string? subscriptionId)
     {

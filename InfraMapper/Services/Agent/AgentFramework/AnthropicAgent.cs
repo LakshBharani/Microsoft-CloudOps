@@ -6,11 +6,6 @@ using Anthropic.Models.Messages;
 
 namespace InfraMapper.Services.Agent.AgentFramework;
 
-/// <summary>
-/// An agent that runs the standard Anthropic tool-use loop, emitting <see cref="AgentStreamEvent"/>s.
-/// Uses the non-streaming Messages API internally so tool dispatch is simple and reliable.
-/// The SSE streaming to the browser is handled by <see cref="SseEventTranslator"/>.
-/// </summary>
 public sealed class AnthropicAgent
 {
     private const int MaxTokens = 8192;
@@ -33,10 +28,6 @@ public sealed class AnthropicAgent
         _tools = tools;
     }
 
-    /// <summary>
-    /// Runs the agent in a streaming fashion, yielding <see cref="AgentStreamEvent"/>s.
-    /// History is read from and written back to <paramref name="session"/>.
-    /// </summary>
     public async IAsyncEnumerable<AgentStreamEvent> RunStreamingAsync(
         string message,
         AnthropicAgentSession session,
@@ -174,10 +165,6 @@ public sealed class AnthropicAgent
         yield return new AgentStreamEvent.Error("Agent loop exceeded maximum iterations.");
     }
 
-    /// <summary>
-    /// Runs the agent without an external session (creates an internal one).
-    /// Returns only the final text. Used for sub-agents invoked as tools.
-    /// </summary>
     public async Task<string> RunAsync(string message, CancellationToken ct)
     {
         var session = new AnthropicAgentSession();
@@ -390,10 +377,6 @@ public sealed class AnthropicAgent
         }
     }
 
-    /// <summary>
-    /// Rebuilds the assistant's content block list for re-injection into history.
-    /// We need ToolUseBlockParam entries so the history is valid for the next API call.
-    /// </summary>
     private static MessageParamContent BuildAssistantContentBlocks(
         IReadOnlyList<ContentBlock> responseContent)
     {

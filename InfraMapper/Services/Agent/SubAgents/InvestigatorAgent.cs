@@ -4,14 +4,6 @@ using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
-/// <summary>
-/// Builds the InvestigatorAgent (Haiku 4.5) which performs Azure resource discovery.
-/// Exposed to the Orchestrator as the "investigate_infrastructure" agent-tool.
-///
-/// The Investigator self-reflects: if the initial query is insufficient for the focus area,
-/// it queries again before returning. This keeps large Resource Graph payloads out of the
-/// Orchestrator's context.
-/// </summary>
 public sealed class InvestigatorAgent
 {
     private readonly AnthropicClient _client;
@@ -28,7 +20,6 @@ public sealed class InvestigatorAgent
         _genericResources = genericResources;
     }
 
-    /// <summary>Builds the InvestigatorAgent and its "investigate_infrastructure" AgentTool.</summary>
     public (AnthropicAgent Agent, AgentTool Function) Build(AgentTool? clarificationTool = null)
     {
         var tools = new InvestigatorTools(_resourceService, _genericResources);

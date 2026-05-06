@@ -7,23 +7,24 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace InfraMapper.Controllers;
 
-/// <summary>
-/// Receives Azure DevOps service hook events (pull request created/updated).
-/// When desired-state.json changes, runs a diff against live Azure and posts
-/// the result as a PR comment.
-/// </summary>
 [ApiController]
 [Route("api/devops/webhook")]
 public class DevOpsWebhookController : ControllerBase
 {
     private readonly AzureDevOpsService _ado;
     private readonly DiffService _diff;
+    private readonly InfraIntentCompiler _intentCompiler;
     private readonly ILogger<DevOpsWebhookController> _logger;
 
-    public DevOpsWebhookController(AzureDevOpsService ado, DiffService diff, ILogger<DevOpsWebhookController> logger)
+    public DevOpsWebhookController(
+        AzureDevOpsService ado,
+        DiffService diff,
+        InfraIntentCompiler intentCompiler,
+        ILogger<DevOpsWebhookController> logger)
     {
         _ado = ado;
         _diff = diff;
+        _intentCompiler = intentCompiler;
         _logger = logger;
     }
 
@@ -36,6 +37,7 @@ public class DevOpsWebhookController : ControllerBase
         [FromQuery] string pat,
         [FromQuery] string branch = "main",
         [FromQuery] string filePath = "infra/desired-state.json",
+        [FromQuery] int? prId = null,
         CancellationToken ct = default)
     {
         var body = await new StreamReader(Request.Body).ReadToEndAsync(ct);
@@ -46,13 +48,9 @@ public class DevOpsWebhookController : ControllerBase
         var eventType = payload?["eventType"]?.GetValue<string>() ?? "";
         _logger.LogInformation("DevOps webhook received: {EventType}", eventType);
 
-        // Only handle PR created / updated events
-        if (!eventType.Contains("pullrequest", StringComparison.OrdinalIgnoreCase))
+        var isWebhook = !string.IsNullOrWhiteSpace(eventType);
+        if (isWebhook && !eventType.Contains("pullrequest", StringComparison.OrdinalIgnoreCase))
             return Ok(new { skipped = true, reason = "Not a pull request event." });
-
-        var prId = payload?["resource"]?["pullRequestId"]?.GetValue<int>();
-        if (prId == null)
-            return Ok(new { skipped = true, reason = "No pull request ID in payload." });
 
         var cfg = new AzureDevOpsConfig
         {
@@ -60,59 +58,133 @@ public class DevOpsWebhookController : ControllerBase
             Pat = pat, Branch = branch, FilePath = filePath
         };
 
-        // Load desired state from the PR source branch
-        string? desiredJson;
-        try { desiredJson = await _ado.GetDesiredStateAsync(cfg, ct); }
+        var payloadPrId = payload?["resource"]?["pullRequestId"]?.GetValue<int>();
+        prId ??= payloadPrId;
+        var sourceBranch = payload?["resource"]?["sourceRefName"]?.GetValue<string>();
+        var targetBranch = payload?["resource"]?["targetRefName"]?.GetValue<string>() ?? branch;
+
+        string? newJson;
+        try
+        {
+            newJson = isWebhook
+                ? await _ado.GetDesiredStateAsync(WithBranch(sourceBranch ?? branch), ct)
+                : body;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning("Could not load desired state: {Error}", ex.Message);
             return Ok(new { skipped = true, reason = "Could not load desired-state.json from repo." });
         }
 
-        if (string.IsNullOrWhiteSpace(desiredJson))
+        if (string.IsNullOrWhiteSpace(newJson))
             return Ok(new { skipped = true, reason = "desired-state.json is empty or missing." });
 
-        DesiredStateSpec spec;
-        try { spec = JsonSerializer.Deserialize<DesiredStateSpec>(desiredJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!; }
-        catch { return BadRequest("Could not parse desired-state.json."); }
+        string? oldJson = null;
+        try { oldJson = await _ado.GetDesiredStateAsync(WithBranch(targetBranch), ct); }
+        catch (Exception ex) { _logger.LogInformation("Could not load target desired state: {Error}", ex.Message); }
 
-        DiffResult diff;
-        try { diff = await _diff.ComputeAsync(subscriptionId, spec, ct); }
+        DesiredStateSpec newSpec;
+        DesiredStateSpec oldSpec;
+        CompiledInfraIntent? compiled = null;
+        try
+        {
+            (newSpec, compiled) = ParseSpec(newJson, subscriptionId);
+            oldSpec = string.IsNullOrWhiteSpace(oldJson)
+                ? new DesiredStateSpec()
+                : ParseSpec(oldJson, subscriptionId).spec;
+        }
+        catch (Exception ex) { return BadRequest($"Could not parse infrastructure JSON: {ex.Message}"); }
+
+        var prDiff = _diff.ComputeDesiredStateDiff(oldSpec, newSpec);
+        DiffResult liveDiff;
+        try { liveDiff = await _diff.ComputeAsync(subscriptionId, newSpec, ct); }
         catch (Exception ex) { return StatusCode(500, $"Diff failed: {ex.Message}"); }
 
-        var comment = BuildPrComment(diff);
-        try { await _ado.PostPrCommentAsync(cfg, prId.Value, comment, ct); }
-        catch (Exception ex) { _logger.LogWarning("Could not post PR comment: {Error}", ex.Message); }
+        var comment = BuildPrComment(prDiff, liveDiff, compiled);
+        if (prId.HasValue)
+        {
+            try { await _ado.PostPrCommentAsync(WithBranch(targetBranch), prId.Value, comment, ct); }
+            catch (Exception ex) { _logger.LogWarning("Could not post PR comment: {Error}", ex.Message); }
+        }
 
         return Ok(new
         {
             prId,
-            toCreate = diff.ToCreate.Count,
-            toUpdate = diff.ToUpdate.Count,
-            toDelete = diff.ToDelete.Count,
-            unchanged = diff.Unchanged.Count
+            intendedCreate = prDiff.ToCreate.Count,
+            intendedUpdate = prDiff.ToUpdate.Count,
+            intendedDelete = prDiff.ToDelete.Count,
+            liveCreate = liveDiff.ToCreate.Count,
+            liveUpdate = liveDiff.ToUpdate.Count,
+            liveDelete = liveDiff.ToDelete.Count
         });
+
+        AzureDevOpsConfig WithBranch(string? b) => new()
+        {
+            OrgUrl = cfg.OrgUrl,
+            Project = cfg.Project,
+            Repository = cfg.Repository,
+            Pat = cfg.Pat,
+            Branch = string.IsNullOrWhiteSpace(b) ? cfg.Branch : b!,
+            FilePath = cfg.FilePath
+        };
     }
 
-    private static string BuildPrComment(DiffResult diff)
+    private (DesiredStateSpec spec, CompiledInfraIntent? compiled) ParseSpec(string json, string subscriptionId)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine("## InfraMapper Diff");
-        sb.AppendLine();
-
-        int total = diff.ToCreate.Count + diff.ToUpdate.Count + diff.ToDelete.Count;
-        if (total == 0)
+        using var doc = JsonDocument.Parse(json);
+        if (InfraIntentCompiler.LooksLikeIntent(doc.RootElement))
         {
-            sb.AppendLine("No infrastructure changes detected. Live Azure matches the desired state.");
-            return sb.ToString();
+            var intent = doc.RootElement.Deserialize<InfraIntentSpec>(JsonOpts)
+                ?? throw new InvalidOperationException("Intent JSON is empty.");
+            var compiled = _intentCompiler.Compile(intent, subscriptionId);
+            return (compiled.DesiredState, compiled);
         }
 
-        sb.AppendLine($"**{total} change(s)** detected between `desired-state.json` and live Azure:");
+        return (doc.RootElement.Deserialize<DesiredStateSpec>(JsonOpts)
+                ?? throw new InvalidOperationException("Desired state JSON is empty."),
+            null);
+    }
+
+    private static string BuildPrComment(DiffResult prDiff, DiffResult liveDiff, CompiledInfraIntent? compiled)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## InfraMapper Infrastructure Review");
         sb.AppendLine();
 
+        if (compiled is not null)
+        {
+            sb.AppendLine("Agentic intent JSON detected. InfraMapper compiled components into Azure resources.");
+            sb.AppendLine();
+            foreach (var warning in compiled.Warnings)
+                sb.AppendLine($"- Warning: {warning}");
+            if (compiled.Warnings.Count > 0) sb.AppendLine();
+        }
+
+        int total = prDiff.ToCreate.Count + prDiff.ToUpdate.Count + prDiff.ToDelete.Count;
+        if (total == 0)
+            sb.AppendLine("No desired-state changes detected between target branch and this PR.");
+        else
+            AppendDiff(sb, $"Desired JSON change ({total})", prDiff);
+
+        var liveTotal = liveDiff.ToCreate.Count + liveDiff.ToUpdate.Count + liveDiff.ToDelete.Count;
+        sb.AppendLine();
+        if (liveTotal == 0)
+            sb.AppendLine("Live Azure already matches the PR desired state.");
+        else
+            AppendDiff(sb, $"Live Azure drift/apply preview ({liveTotal})", liveDiff);
+
+        sb.AppendLine();
+        sb.AppendLine("---");
+        sb.AppendLine("*Merge this PR to queue approved changes for execution via InfraMapper.*");
+        return sb.ToString();
+    }
+
+    private static void AppendDiff(StringBuilder sb, string title, DiffResult diff)
+    {
+        sb.AppendLine($"### {title}");
         if (diff.ToCreate.Count > 0)
         {
-            sb.AppendLine($"### Create ({diff.ToCreate.Count})");
+            sb.AppendLine($"**Create ({diff.ToCreate.Count})**");
             foreach (var n in diff.ToCreate)
                 sb.AppendLine($"- `{n.Name}` ({n.Type}) in `{n.ResourceGroup}`");
             sb.AppendLine();
@@ -120,26 +192,24 @@ public class DevOpsWebhookController : ControllerBase
 
         if (diff.ToUpdate.Count > 0)
         {
-            sb.AppendLine($"### Update ({diff.ToUpdate.Count})");
+            sb.AppendLine($"**Update ({diff.ToUpdate.Count})**");
             foreach (var n in diff.ToUpdate)
             {
                 sb.AppendLine($"- `{n.Name}` ({n.Type})");
                 foreach (var c in n.Changes)
-                    sb.AppendLine($"  - `{c.Field}`: `{c.From}` → `{c.To}`");
+                    sb.AppendLine($"  - `{c.Field}`: `{c.From}` -> `{c.To}`");
             }
             sb.AppendLine();
         }
 
         if (diff.ToDelete.Count > 0)
         {
-            sb.AppendLine($"### Delete ({diff.ToDelete.Count})");
+            sb.AppendLine($"**Delete ({diff.ToDelete.Count})**");
             foreach (var n in diff.ToDelete)
                 sb.AppendLine($"- `{n.Name}` ({n.Type}) in `{n.ResourceGroup}`");
             sb.AppendLine();
         }
-
-        sb.AppendLine("---");
-        sb.AppendLine("*Approve this PR to queue the changes for execution via InfraMapper Agent.*");
-        return sb.ToString();
     }
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 }

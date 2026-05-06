@@ -7,7 +7,6 @@ public sealed class DesiredStateSpec
 {
     public List<DesiredResourceNode> Nodes { get; set; } = [];
     public List<DesiredEdge> Edges { get; set; } = [];
-    /// <summary>Only diff resources inside these resource groups. If empty, inferred from nodes.</summary>
     public List<string> Scope { get; set; } = [];
 }
 
@@ -24,7 +23,6 @@ public sealed class DesiredResourceNode
     public Dictionary<string, string> Tags { get; set; } = [];
 }
 
-/// <summary>Deserializes a JSON value that may be a string literal or an inline object/array into a compact JSON string.</summary>
 internal sealed class StringOrObjectConverter : JsonConverter<string?>
 {
     public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

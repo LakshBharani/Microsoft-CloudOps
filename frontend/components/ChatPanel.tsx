@@ -127,10 +127,11 @@ function ActivityTimeline({ activities, defaultOpen = true }: { activities?: Age
   });
 
   function icon(item: AgentActivityItem) {
-    if (item.status === "running") return <Cpu size={11} className="animate-pulse text-blue-400" />;
-    if (item.status === "failed") return <XCircle size={11} className="text-red-400" />;
-    if (item.status === "rejected") return <AlertTriangle size={11} className="text-amber-400" />;
-    return <CheckCircle2 size={11} className="text-green-400" />;
+    const className = "mt-0.5 shrink-0";
+    if (item.status === "running") return <Cpu size={11} className={`${className} animate-pulse text-blue-400`} />;
+    if (item.status === "failed") return <XCircle size={11} className={`${className} text-red-400`} />;
+    if (item.status === "rejected") return <AlertTriangle size={11} className={`${className} text-amber-400`} />;
+    return <CheckCircle2 size={11} className={`${className} text-green-400`} />;
   }
 
   function label(item: AgentActivityItem) {
@@ -173,7 +174,7 @@ function ActivityTimeline({ activities, defaultOpen = true }: { activities?: Age
                   {(children.get(item.id) ?? []).map((child) => (
                     <div key={child.id} className="flex items-start gap-1.5 text-[10px] text-slate-500">
                       {icon(child)}
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <span className="font-medium text-slate-300">{label(child)}</span>
                         {child.model && (
                           <span className="ml-1 text-slate-600">· {formatModelName(child.model)}</span>

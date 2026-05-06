@@ -1,6 +1,5 @@
 namespace InfraMapper.Models;
 
-/// <summary>Shared payload for requesting an approval and for applying a deployment (must match byte-for-byte for hash).</summary>
 public class DeploymentManifestRequest
 {
     public required string SubscriptionId { get; set; }

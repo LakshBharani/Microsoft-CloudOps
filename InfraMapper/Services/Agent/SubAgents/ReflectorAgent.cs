@@ -5,11 +5,6 @@ using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
-/// <summary>
-/// Builds the ReflectorAgent (Haiku 4.5) which performs post-deployment audits and records
-/// lessons for cross-session memory.
-/// Exposed to the Orchestrator as the "reflect_on_deployment" agent-tool.
-/// </summary>
 public sealed class ReflectorAgent
 {
     private readonly AnthropicClient _client;
@@ -21,7 +16,6 @@ public sealed class ReflectorAgent
         _lessonsStore = lessonsStore;
     }
 
-    /// <summary>Builds the ReflectorAgent and its "reflect_on_deployment" AgentTool.</summary>
     public (AnthropicAgent Agent, AgentTool Function) Build(AgentTool? clarificationTool = null)
     {
         var tools = new ReflectorTools(_lessonsStore);

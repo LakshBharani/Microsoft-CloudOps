@@ -17,7 +17,6 @@ public sealed class DeploymentsController : ControllerBase
         _armDeploymentService = armDeploymentService;
     }
 
-    /// <summary>Apply an ARM deployment after approval. Body must match the approved manifest.</summary>
     [HttpPost("apply")]
     [ProducesResponseType(typeof(ArmDeploymentApplyResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -32,7 +31,6 @@ public sealed class DeploymentsController : ControllerBase
         return Ok(result);
     }
 
-    /// <summary>Read deployment provisioning state (no approval required).</summary>
     [HttpGet("{deploymentName}/status")]
     [ProducesResponseType(typeof(ArmDeploymentApplyResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

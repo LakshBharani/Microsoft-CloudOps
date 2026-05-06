@@ -4,10 +4,6 @@ using InfraMapper.Services.Agent.Memory;
 
 namespace InfraMapper.Services.Agent.Tools;
 
-/// <summary>
-/// Tools available to the ReflectorAgent.
-/// Writes post-deployment lessons to LessonsStore for cross-session memory.
-/// </summary>
 public sealed class ReflectorTools
 {
     private readonly ILessonsStore _lessonsStore;

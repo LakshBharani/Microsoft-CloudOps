@@ -8,11 +8,6 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace InfraMapper.Controllers;
 
-/// <summary>
-/// Called by the infra-apply pipeline after a PR merges to main.
-/// Loads desired-state.json, diffs vs live Azure, and runs the agent
-/// with auto-approval to execute the changes.
-/// </summary>
 [ApiController]
 [Route("api/devops/execute")]
 public class DevOpsExecuteController : ControllerBase
@@ -20,17 +15,23 @@ public class DevOpsExecuteController : ControllerBase
     private readonly AzureDevOpsService _ado;
     private readonly DiffService _diff;
     private readonly AgentService _agent;
+    private readonly InfraIntentCompiler _intentCompiler;
+    private readonly IArmDeploymentService _deploymentService;
     private readonly ILogger<DevOpsExecuteController> _logger;
 
     public DevOpsExecuteController(
         AzureDevOpsService ado,
         DiffService diff,
         AgentService agent,
+        InfraIntentCompiler intentCompiler,
+        IArmDeploymentService deploymentService,
         ILogger<DevOpsExecuteController> logger)
     {
         _ado = ado;
         _diff = diff;
         _agent = agent;
+        _intentCompiler = intentCompiler;
+        _deploymentService = deploymentService;
         _logger = logger;
     }
 
@@ -60,9 +61,25 @@ public class DevOpsExecuteController : ControllerBase
         if (string.IsNullOrWhiteSpace(desiredJson))
             return Ok(new { skipped = true, reason = "desired-state.json is empty or missing." });
 
+        CompiledInfraIntent? compiled = null;
         DesiredStateSpec spec;
-        try { spec = JsonSerializer.Deserialize<DesiredStateSpec>(desiredJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!; }
-        catch { return BadRequest("Could not parse desired-state.json."); }
+        try
+        {
+            using var doc = JsonDocument.Parse(desiredJson);
+            if (InfraIntentCompiler.LooksLikeIntent(doc.RootElement))
+            {
+                var intent = doc.RootElement.Deserialize<InfraIntentSpec>(JsonOpts)
+                    ?? throw new InvalidOperationException("Intent JSON is empty.");
+                compiled = _intentCompiler.Compile(intent, subscriptionId);
+                spec = compiled.DesiredState;
+            }
+            else
+            {
+                spec = doc.RootElement.Deserialize<DesiredStateSpec>(JsonOpts)
+                    ?? throw new InvalidOperationException("Desired state JSON is empty.");
+            }
+        }
+        catch (Exception ex) { return BadRequest($"Could not parse desired-state.json: {ex.Message}"); }
 
         // 2. Diff vs live Azure
         DiffResult diff;
@@ -77,6 +94,37 @@ public class DevOpsExecuteController : ControllerBase
         }
 
         _logger.LogInformation("Execute: {Total} change(s) to apply.", total);
+
+        if (compiled is not null)
+        {
+            var applyResult = await _deploymentService.CreateOrUpdateAsync(new ArmDeploymentApplyInput
+            {
+                SubscriptionId = subscriptionId,
+                DeploymentName = compiled.DeploymentName,
+                TemplateJson = compiled.TemplateJson,
+                ResourceGroupName = compiled.ResourceGroupName,
+                Location = compiled.Location,
+                Mode = "Incremental",
+                WaitForCompletion = true
+            }, ct);
+
+            var comment = applyResult.Succeeded
+                ? $"## InfraMapper Intent Execution Complete\n\nDeployment `{compiled.DeploymentName}` succeeded."
+                : $"## InfraMapper Intent Execution Failed\n\nDeployment `{compiled.DeploymentName}` failed: {applyResult.ErrorMessage}";
+            if (prId.HasValue)
+            {
+                try { await _ado.PostPrCommentAsync(cfg, prId.Value, comment, ct); }
+                catch (Exception ex) { _logger.LogWarning("Could not post PR comment: {Error}", ex.Message); }
+            }
+
+            return Ok(new
+            {
+                succeeded = applyResult.Succeeded,
+                reply = applyResult.Succeeded ? "Intent deployment completed." : applyResult.ErrorMessage,
+                changes = total,
+                deploymentName = compiled.DeploymentName
+            });
+        }
 
         // 3. Build prompt from diff and run agent with auto-approve
         var prompt = BuildPrompt(diff);
@@ -142,4 +190,6 @@ public class DevOpsExecuteController : ControllerBase
             lines.Add($"- Delete {n.Type} \"{n.Name}\" (id: {n.ExistingId})");
         return string.Join("\n", lines);
     }
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 }

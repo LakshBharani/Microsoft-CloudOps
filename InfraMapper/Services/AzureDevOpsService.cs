@@ -38,35 +38,55 @@ public sealed class AzureDevOpsService
     {
         using var http = CreateClient(cfg);
         var path = Uri.EscapeDataString(NormalizePath(cfg.FilePath));
-        var url = $"{ApiBase(cfg)}/items?path={path}&$format=text&api-version=7.0";
+        var branch = Uri.EscapeDataString(NormalizeBranch(cfg.Branch));
+        var url = $"{ApiBase(cfg)}/items?path={path}&$format=text&versionDescriptor.version={branch}&versionDescriptor.versionType=branch&api-version=7.0";
         var res = await http.GetAsync(url, ct);
+        if (!res.IsSuccessStatusCode && string.Equals(NormalizeBranch(cfg.Branch), "main", StringComparison.OrdinalIgnoreCase))
+        {
+            url = $"{ApiBase(cfg)}/items?path={path}&$format=text&api-version=7.0";
+            res = await http.GetAsync(url, ct);
+        }
         if (res.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
-        res.EnsureSuccessStatusCode();
+        if (!res.IsSuccessStatusCode)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException($"Azure DevOps item fetch failed ({(int)res.StatusCode} {res.ReasonPhrase}): {body}");
+        }
         return await res.Content.ReadAsStringAsync(ct);
     }
+
+    private static string NormalizeBranch(string branch) =>
+        branch.StartsWith("refs/heads/", StringComparison.OrdinalIgnoreCase)
+            ? branch["refs/heads/".Length..]
+            : branch;
 
     public async Task PushDesiredStateAsync(AzureDevOpsConfig cfg, string content, string commitMessage, CancellationToken ct)
     {
         using var http = CreateClient(cfg);
+        var branch = NormalizeBranch(cfg.Branch);
 
         // Get current branch ref
-        var refsUrl = $"{ApiBase(cfg)}/refs?filter=heads/{cfg.Branch}&api-version=7.0";
+        var refsUrl = $"{ApiBase(cfg)}/refs?filter={Uri.EscapeDataString($"heads/{branch}")}&api-version=7.0";
         var refsRes = await http.GetAsync(refsUrl, ct);
-        refsRes.EnsureSuccessStatusCode();
+        await EnsureSuccessWithBodyAsync(refsRes, "Azure DevOps refs fetch", ct);
         var refsJson = JsonNode.Parse(await refsRes.Content.ReadAsStringAsync(ct))!;
         var refsArray = refsJson["value"]?.AsArray();
         var oldObjectId = refsArray?.Count > 0 ? refsArray[0]?["objectId"]?.GetValue<string>() : null;
 
         // Branch doesn't exist — branch off main
-        if (oldObjectId == null && cfg.Branch != "main")
+        if (oldObjectId == null && !string.Equals(branch, "main", StringComparison.OrdinalIgnoreCase))
         {
             var mainRefsUrl = $"{ApiBase(cfg)}/refs?filter=heads/main&api-version=7.0";
             var mainRes = await http.GetAsync(mainRefsUrl, ct);
-            mainRes.EnsureSuccessStatusCode();
+            await EnsureSuccessWithBodyAsync(mainRes, "Azure DevOps main refs fetch", ct);
             var mainJson = JsonNode.Parse(await mainRes.Content.ReadAsStringAsync(ct))!;
             var mainArray = mainJson["value"]?.AsArray();
             oldObjectId = mainArray?.Count > 0 ? mainArray[0]?["objectId"]?.GetValue<string>() : null;
             oldObjectId ??= "0000000000000000000000000000000000000000";
+        }
+        else if (oldObjectId == null)
+        {
+            throw new HttpRequestException($"Azure DevOps branch '{branch}' was not found.");
         }
         oldObjectId ??= "0000000000000000000000000000000000000000";
 
@@ -75,9 +95,48 @@ public sealed class AzureDevOpsService
         var changeType = existing == null ? "add" : "edit";
         var normalizedPath = NormalizePath(cfg.FilePath);
 
+        var pushUrl = $"{ApiBase(cfg)}/pushes?api-version=7.0";
+        var res = await PushFileChangeAsync(http, pushUrl, branch, oldObjectId, commitMessage, changeType, normalizedPath, content, ct);
+        if (!res.IsSuccessStatusCode && changeType == "add")
+        {
+            var errorBody = await res.Content.ReadAsStringAsync(ct);
+            if (errorBody.Contains("specified in the add operation already exists", StringComparison.OrdinalIgnoreCase))
+            {
+                oldObjectId = await GetBranchObjectIdAsync(http, cfg, branch, ct) ?? oldObjectId;
+                res = await PushFileChangeAsync(http, pushUrl, branch, oldObjectId, commitMessage, "edit", normalizedPath, content, ct);
+            }
+            else
+            {
+                throw new HttpRequestException($"Azure DevOps push failed ({(int)res.StatusCode} {res.ReasonPhrase}): {errorBody}");
+            }
+        }
+        await EnsureSuccessWithBodyAsync(res, "Azure DevOps push", ct);
+    }
+
+    private async Task<string?> GetBranchObjectIdAsync(HttpClient http, AzureDevOpsConfig cfg, string branch, CancellationToken ct)
+    {
+        var refsUrl = $"{ApiBase(cfg)}/refs?filter={Uri.EscapeDataString($"heads/{branch}")}&api-version=7.0";
+        var refsRes = await http.GetAsync(refsUrl, ct);
+        await EnsureSuccessWithBodyAsync(refsRes, "Azure DevOps refs fetch", ct);
+        var refsJson = JsonNode.Parse(await refsRes.Content.ReadAsStringAsync(ct))!;
+        var refsArray = refsJson["value"]?.AsArray();
+        return refsArray?.Count > 0 ? refsArray[0]?["objectId"]?.GetValue<string>() : null;
+    }
+
+    private static Task<HttpResponseMessage> PushFileChangeAsync(
+        HttpClient http,
+        string pushUrl,
+        string branch,
+        string oldObjectId,
+        string commitMessage,
+        string changeType,
+        string normalizedPath,
+        string content,
+        CancellationToken ct)
+    {
         var push = new
         {
-            refUpdates = new[] { new { name = $"refs/heads/{cfg.Branch}", oldObjectId } },
+            refUpdates = new[] { new { name = $"refs/heads/{branch}", oldObjectId } },
             commits = new[]
             {
                 new
@@ -96,10 +155,15 @@ public sealed class AzureDevOpsService
             }
         };
 
-        var pushUrl = $"{ApiBase(cfg)}/pushes?api-version=7.0";
         var body = new StringContent(JsonSerializer.Serialize(push), Encoding.UTF8, "application/json");
-        var res = await http.PostAsync(pushUrl, body, ct);
-        res.EnsureSuccessStatusCode();
+        return http.PostAsync(pushUrl, body, ct);
+    }
+
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage res, string operation, CancellationToken ct)
+    {
+        if (res.IsSuccessStatusCode) return;
+        var body = await res.Content.ReadAsStringAsync(ct);
+        throw new HttpRequestException($"{operation} failed ({(int)res.StatusCode} {res.ReasonPhrase}): {body}");
     }
 
     public async Task PostPrCommentAsync(AzureDevOpsConfig cfg, int prId, string markdown, CancellationToken ct)

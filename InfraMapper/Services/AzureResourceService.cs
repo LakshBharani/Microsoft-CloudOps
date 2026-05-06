@@ -65,8 +65,6 @@ public class AzureResourceService
         return graph;
     }
 
-    /// <summary>Resource Graph query without properties/tags/sku/kind — 
-    /// small payload; edges still computed from structural rules.</summary>
     public async Task<InfrastructureGraphSummary> GetInfrastructureGraphSummaryAsync(string subscriptionId)
     {
         var token = await _credential.GetTokenAsync(

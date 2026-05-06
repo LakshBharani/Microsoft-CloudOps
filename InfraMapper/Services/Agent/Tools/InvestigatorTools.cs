@@ -5,10 +5,6 @@ using InfraMapper.Services;
 
 namespace InfraMapper.Services.Agent.Tools;
 
-/// <summary>
-/// Tools available to the InvestigatorAgent.
-/// Wraps AzureResourceService for read-only resource discovery.
-/// </summary>
 public sealed class InvestigatorTools
 {
     private readonly AzureResourceService _resourceService;

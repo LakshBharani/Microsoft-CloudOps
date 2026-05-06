@@ -3,10 +3,6 @@ using System.Text.Json;
 
 namespace InfraMapper.Services.Agent.Tools;
 
-/// <summary>
-/// Tools available to the CriticAgent.
-/// Provides plan inspection and verdict recording.
-/// </summary>
 public sealed class CriticTools
 {
     private readonly PlanStore _planStore;

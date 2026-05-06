@@ -54,6 +54,9 @@ public sealed class DiffService
         // Live resources in scope that aren't in desired = to delete
         foreach (var live_node in liveInScope)
         {
+            if (IsScopedResourceGroup(live_node, scopedRgs))
+                continue;
+
             var key = Key(live_node.Name, live_node.Type, live_node.ResourceGroup);
             if (!matchedLiveKeys.Contains(key))
             {
@@ -66,6 +69,44 @@ public sealed class DiffService
                     ExistingId = live_node.Id,
                 });
             }
+        }
+
+        return result;
+    }
+
+    public DiffResult ComputeDesiredStateDiff(DesiredStateSpec oldDesired, DesiredStateSpec newDesired)
+    {
+        var result = new DiffResult();
+        var oldIndex = oldDesired.Nodes.ToDictionary(
+            n => Key(n.Name, n.Type, n.ResourceGroup),
+            n => n);
+        var matchedOldKeys = new HashSet<string>();
+
+        foreach (var newNode in newDesired.Nodes)
+        {
+            var key = Key(newNode.Name, newNode.Type, newNode.ResourceGroup);
+            if (oldIndex.TryGetValue(key, out var oldNode))
+            {
+                matchedOldKeys.Add(key);
+                var changes = DetectChanges(newNode, ToResourceNode(oldNode));
+                var diff = ToDiffNode(newNode, null);
+                diff.Changes = changes;
+                if (changes.Count > 0)
+                    result.ToUpdate.Add(diff);
+                else
+                    result.Unchanged.Add(diff);
+            }
+            else
+            {
+                result.ToCreate.Add(ToDiffNode(newNode, null));
+            }
+        }
+
+        foreach (var oldNode in oldDesired.Nodes)
+        {
+            var key = Key(oldNode.Name, oldNode.Type, oldNode.ResourceGroup);
+            if (!matchedOldKeys.Contains(key))
+                result.ToDelete.Add(ToDiffNode(oldNode, null));
         }
 
         return result;
@@ -107,4 +148,19 @@ public sealed class DiffService
 
     private static string Key(string name, string type, string rg) =>
         $"{name.ToLowerInvariant()}|{type.ToLowerInvariant()}|{rg.ToLowerInvariant()}";
+
+    private static bool IsScopedResourceGroup(ResourceNode node, HashSet<string> scopedRgs) =>
+        string.Equals(node.Type, "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase) &&
+        scopedRgs.Contains(node.Name.ToLowerInvariant());
+
+    private static ResourceNode ToResourceNode(DesiredResourceNode desired) => new()
+    {
+        Name = desired.Name,
+        Type = desired.Type,
+        ResourceGroup = desired.ResourceGroup,
+        Location = desired.Location,
+        Tags = new Dictionary<string, string>(desired.Tags),
+        SkuJson = desired.SkuJson,
+        Kind = desired.Kind
+    };
 }

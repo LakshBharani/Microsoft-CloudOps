@@ -4,13 +4,6 @@ using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
-/// <summary>
-/// Builds the CriticAgent (Sonnet 4.6) which validates deployment plans before user approval.
-/// Exposed to the Orchestrator as the "critique_plan" agent-tool.
-///
-/// The Critic checks: naming conventions, required dependencies, region/SKU compatibility,
-/// security posture, and risk level. Returns approved:true/false with actionable feedback.
-/// </summary>
 public sealed class CriticAgent
 {
     private readonly AnthropicClient _client;
@@ -22,10 +15,6 @@ public sealed class CriticAgent
         _planStore = planStore;
     }
 
-    /// <summary>
-    /// Builds the CriticAgent + its "critique_plan" AgentTool.
-    /// <paramref name="revisionCount"/> is the number of prior revision cycles for this session.
-    /// </summary>
     public (AnthropicAgent Agent, AgentTool Function) BuildForSession(int revisionCount = 0, AgentTool? clarificationTool = null)
     {
         var tools = new CriticTools(_planStore, revisionCount);

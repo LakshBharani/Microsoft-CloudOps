@@ -19,7 +19,7 @@ steps:
   - script: |
       set -e
       RESPONSE=$(curl -s -o /tmp/diff_response.json -w "%{http_code}" -X POST \
-        "$(INFRA_API_URL)/api/devops/webhook?subscriptionId=$(AZURE_SUBSCRIPTION_ID)&orgUrl=$(System.TeamFoundationCollectionUri)&project=$(System.TeamProject)&repository=$(Build.Repository.Name)&pat=$(ADO_PAT)&branch=$(System.PullRequest.TargetBranchName)&filePath=infra/desired-state.json" \
+        "$(INFRA_API_URL)/api/devops/webhook?subscriptionId=$(AZURE_SUBSCRIPTION_ID)&orgUrl=$(System.TeamFoundationCollectionUri)&project=$(System.TeamProject)&repository=$(Build.Repository.Name)&pat=$(ADO_PAT)&branch=$(System.PullRequest.TargetBranchName)&filePath=infra/desired-state.json&prId=$(System.PullRequest.PullRequestId)" \
         -H "Content-Type: application/json" \
         -d "$(cat $(Build.SourcesDirectory)/infra/desired-state.json)")
 

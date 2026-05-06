@@ -50,7 +50,6 @@ internal static class AzureResourceGraphJson
             node.Kind = kind.GetString();
     }
 
-    /// <summary>Identity fields only; leaves Tags/Properties empty for dependency resolution heuristics that do not need ARG payloads.</summary>
     internal static void PopulateSummaryFromRow(JsonElement element, ResourceNode node)
     {
         node.Id = element.GetProperty("id").GetString()!;

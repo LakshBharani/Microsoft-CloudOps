@@ -5,12 +5,6 @@ using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
-/// <summary>
-/// Builds the PlannerAgent (Sonnet 4.6) which enforces a draft → self-critique → revise loop
-/// before registering any deployment plan.
-///
-/// The Orchestrator invokes it as an agent-tool named "plan_deployment".
-/// </summary>
 public sealed class PlannerAgent
 {
     private readonly AnthropicClient _client;
@@ -24,10 +18,6 @@ public sealed class PlannerAgent
         _lessonsStore = lessonsStore;
     }
 
-    /// <summary>
-    /// Builds a PlannerAgent + its "plan_deployment" AgentTool for the given session.
-    /// Call once per ConversationStore session during session initialisation.
-    /// </summary>
     public (AnthropicAgent Agent, AgentTool Function) BuildForSession(string sessionId, AgentTool? clarificationTool = null)
     {
         var tools = new PlannerTools(_planStore, _lessonsStore, sessionId);

@@ -4,26 +4,12 @@ using System.Text.Json;
 
 namespace InfraMapper.Services.Agent.AgentFramework;
 
-/// <summary>
-/// Translates IAsyncEnumerable&lt;AgentStreamEvent&gt; from the new AnthropicAgent
-/// into the newline-delimited JSON SSE event format consumed by the frontend.
-///
-/// Existing event types (preserved byte-for-byte): tool_call, tool_result, usage, plan, reply, error.
-/// New additive events: agent_call, agent_result (emitted when a sub-agent AgentTool is invoked).
-///
-/// Phase 3: plan events are buffered until the Critic approves them (silent retry UX).
-/// The final emitted plan event carries revision_count so the frontend can show a badge.
-/// </summary>
 public sealed class SseEventTranslator
 {
     private readonly string _sessionId;
     private readonly PlanStore _planStore;
     private readonly bool _autoApprovePlan;
 
-    /// <summary>
-    /// Sub-agent names registered as AgentTools — tool names matching these
-    /// get agent_call / agent_result events in addition to the normal tool_call / tool_result.
-    /// </summary>
     public static readonly HashSet<string> SubAgentToolNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "investigate_infrastructure",
@@ -411,7 +397,6 @@ public sealed class SseEventTranslator
         _ => toolName
     };
 
-    /// <summary>Maps sub-agent tool names to AgentRegistry agent names for model lookup.</summary>
     private static string ToolNameToAgentName(string toolName) => toolName switch
     {
         "investigate_infrastructure" => "investigator",

@@ -4,7 +4,6 @@ using InfraMapper.Models;
 
 namespace InfraMapper.Services;
 
-/// <summary>Stable fingerprint of a deployment manifest for approval binding.</summary>
 public static class DeploymentContentHasher
 {
     public static string Compute(ArmDeploymentApplyInput input)

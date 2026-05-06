@@ -3,11 +3,6 @@ using Microsoft.Extensions.Hosting;
 
 namespace InfraMapper.Services.Agent.Memory;
 
-/// <summary>
-/// Persists deployment lessons to InfraMapper/.inframapper/lessons.json.
-/// Uses a file lock on writes so multiple processes don't corrupt the file.
-/// Loads the full list on every Query (file is small — single demo deployment data).
-/// </summary>
 public sealed class JsonFileLessonsStore : ILessonsStore
 {
     private static readonly string LegacyFilePath = Path.Combine(

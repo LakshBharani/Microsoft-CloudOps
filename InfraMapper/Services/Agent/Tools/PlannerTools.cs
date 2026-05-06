@@ -5,11 +5,6 @@ using InfraMapper.Services.Agent.Memory;
 
 namespace InfraMapper.Services.Agent.Tools;
 
-/// <summary>
-/// Tools available to the PlannerAgent.
-/// Enforces draft → record_critique → create_plan flow.
-/// One instance per ConversationStore session (sessionId is captured at construction time).
-/// </summary>
 public sealed class PlannerTools
 {
     private readonly PlanStore _planStore;
@@ -29,10 +24,6 @@ public sealed class PlannerTools
         _currentIntent = intent;
     }
 
-    /// <summary>
-    /// STEP 0 (optional but recommended): Retrieve relevant past lessons before drafting.
-    /// No LLM call — pure lookup from the persistent lessons file.
-    /// </summary>
     [Description("Retrieve relevant lessons from past deployments for the given resource types. " +
                  "Call this BEFORE drafting to avoid repeating known mistakes.")]
     public string GetLessons(
@@ -45,10 +36,6 @@ public sealed class PlannerTools
         return JsonSerializer.Serialize(new { lessons });
     }
 
-    /// <summary>
-    /// STEP 2 OF 3: The planner MUST call this before create_plan to commit its critique.
-    /// Returns guidance that instructs the LLM to proceed to revision.
-    /// </summary>
     [Description("REQUIRED STEP 2 OF 3: Record your critique of the ARM template draft. " +
                  "Analyze naming conventions, required dependencies, region/SKU compatibility, " +
                  "security, and missing required properties. You MUST call this before create_plan.")]
@@ -61,10 +48,6 @@ public sealed class PlannerTools
                "then call create_plan with the improved version.";
     }
 
-    /// <summary>
-    /// STEP 3 OF 3: Registers the plan in PlanStore and returns full plan JSON that the Orchestrator
-    /// can parse to emit the 'plan' SSE event to the frontend.
-    /// </summary>
     [Description("REQUIRED STEP 3 OF 3: Submit the final revised deployment plan after self-critique. " +
                  "Call this ONLY after record_critique. Returns plan JSON that must be passed back verbatim.")]
     public string CreatePlan(

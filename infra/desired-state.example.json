@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0",
+  "intent": "Create a demo web app backed by private-by-default storage.",
+  "scope": {
+    "subscriptionId": "<subscription-id>",
+    "resourceGroup": "rg-im-demo",
+    "location": "eastus"
+  },
+  "components": [
+    {
+      "kind": "storageAccount",
+      "name": "stimdemo001",
+      "replication": "LRS",
+      "publicAccess": false
+    },
+    {
+      "kind": "webApp",
+      "name": "app-im-demo",
+      "runtime": "dotnet",
+      "sku": "B1"
+    }
+  ],
+  "constraints": {
+    "tags": {
+      "owner": "cloudops",
+      "env": "demo"
+    }
+  }
+}

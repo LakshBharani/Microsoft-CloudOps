@@ -19,7 +19,6 @@ public sealed class ResourceMutationsController : ControllerBase
         _genericResources = genericResources;
     }
 
-    /// <summary>Request approval for a generic resource create/update/delete. Body must match apply exactly.</summary>
     [HttpPost("resource-approvals")]
     [ProducesResponseType(typeof(CreateApprovalResponse), StatusCodes.Status200OK)]
     public ActionResult<CreateApprovalResponse> CreateResourceApproval([FromBody] ResourceMutationManifestRequest request)
@@ -32,7 +31,6 @@ public sealed class ResourceMutationsController : ControllerBase
         return Ok(response);
     }
 
-    /// <summary>Apply an approved resource mutation.</summary>
     [HttpPost("resources/apply")]
     [ProducesResponseType(typeof(GenericResourceOperationResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -71,7 +69,6 @@ public sealed class ResourceMutationsController : ControllerBase
         return MapResult(result);
     }
 
-    /// <summary>Read a single resource by ARM resource id (no approval).</summary>
     [HttpGet("resources")]
     [ProducesResponseType(typeof(GenericResourceOperationResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

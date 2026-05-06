@@ -12,6 +12,5 @@ public sealed class GenericResourceOperationResult
 
     public string? ErrorMessage { get; init; }
 
-    /// <summary>For get/create/update: serialized resource body when available.</summary>
     public string? ResourceJson { get; init; }
 }

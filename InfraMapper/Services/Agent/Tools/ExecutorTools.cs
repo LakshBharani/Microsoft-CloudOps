@@ -6,12 +6,6 @@ using InfraMapper.Services;
 
 namespace InfraMapper.Services.Agent.Tools;
 
-/// <summary>
-/// Tools available to the ExecutorAgent.
-/// Wraps the ARM deployment services with error classification:
-///   - Transient errors (429/503) are retried internally (up to 3 attempts).
-///   - Validation/quota errors return needs_replan:true so the Orchestrator can re-plan.
-/// </summary>
 public sealed class ExecutorTools
 {
     private readonly IArmDeploymentService _deploymentService;

@@ -7,11 +7,6 @@ using InfraMapper.Services;
 
 namespace InfraMapper.Services.Agent.Tools;
 
-/// <summary>
-/// Tool implementations for the OrchestratorAgent.
-/// Each public method is wrapped as an AIFunction via AIFunctionFactory.Create.
-/// One instance is created per agent session so that sessionId is always correct.
-/// </summary>
 public sealed class OrchestratorTools
 {
     private readonly AzureResourceService _resourceService;
@@ -269,7 +264,6 @@ public sealed class OrchestratorTools
     });
 }
 
-/// <summary>DTO for a single operation within a create_plan call.</summary>
 public record PlanOperationDto(
     [property: Description("Action to take: Create, Update, Delete, or Deploy")] string Action,
     [property: Description("Azure resource type, e.g. Microsoft.Storage/storageAccounts")] string ResourceType,

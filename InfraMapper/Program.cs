@@ -17,6 +17,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddSingleton<AzureResourceService>();
 builder.Services.AddSingleton<DiffService>();
 builder.Services.AddSingleton<AzureDevOpsService>();
+builder.Services.AddSingleton<InfraIntentCompiler>();
 
 builder.Services.AddSingleton<TokenCredential>(_ =>
 {

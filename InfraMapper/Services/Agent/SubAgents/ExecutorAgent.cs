@@ -4,14 +4,6 @@ using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
-/// <summary>
-/// Builds the ExecutorAgent (Haiku 4.5) which applies approved deployment plans to Azure.
-/// Exposed to the Orchestrator as the "execute_plan" agent-tool.
-///
-/// Error handling within the Executor:
-///   - Transient errors (429/503) are retried in code (up to 3 attempts).
-///   - Validation/quota errors return needs_replan:true — the Orchestrator loops back to plan_deployment.
-/// </summary>
 public sealed class ExecutorAgent
 {
     private readonly AnthropicClient _client;
@@ -37,7 +29,6 @@ public sealed class ExecutorAgent
         _planStore = planStore;
     }
 
-    /// <summary>Builds the ExecutorAgent and its "execute_plan" AgentTool for the given session.</summary>
     public (AnthropicAgent Agent, AgentTool Function) BuildForSession(
         string sessionId,
         string subscriptionId,

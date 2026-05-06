@@ -15,7 +15,6 @@ public sealed class ApprovalsController : ControllerBase
         _approvalService = approvalService;
     }
 
-    /// <summary>Request approval for a deployment manifest. Use the returned id with POST deployments/apply.</summary>
     [HttpPost]
     [ProducesResponseType(typeof(CreateApprovalResponse), StatusCodes.Status200OK)]
     public ActionResult<CreateApprovalResponse> Create([FromBody] DeploymentManifestRequest request)

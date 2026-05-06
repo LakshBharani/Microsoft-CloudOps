@@ -7,10 +7,6 @@ using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent;
 
-/// <summary>
-/// Stores per-session (AnthropicAgent, AnthropicAgentSession) pairs so conversation history is
-/// maintained across multiple HTTP requests. One entry per sessionId.
-/// </summary>
 public sealed class ConversationStore
 {
     public sealed record SessionEntry(
@@ -71,10 +67,6 @@ public sealed class ConversationStore
         _loggerFactory = loggerFactory;
     }
 
-    /// <summary>
-    /// Returns the existing session entry for <paramref name="sessionId"/>, or creates a new one
-    /// using <paramref name="subscriptionId"/> to build the system prompt and tool instances.
-    /// </summary>
     public Task<SessionEntry> GetOrCreateAsync(string sessionId, string subscriptionId, CancellationToken ct = default)
     {
         if (_sessions.TryGetValue(sessionId, out var existing))
@@ -125,7 +117,6 @@ public sealed class ConversationStore
         return Task.FromResult(stored);
     }
 
-    /// <summary>Stores a pending "plan approved" message in the session StateBag for pickup on the next stream call.</summary>
     public void SetPendingApproval(string sessionId, Guid planId)
     {
         if (!_sessions.TryGetValue(sessionId, out var entry)) return;
@@ -134,7 +125,6 @@ public sealed class ConversationStore
             $"The plan with id {planId} has been approved by the user. Call execute_plan with plan_id \"{planId}\" now, then call reflect_on_deployment after execution completes.");
     }
 
-    /// <summary>Removes and returns a pending approval message, if any.</summary>
     public string? ConsumePendingApproval(string sessionId)
     {
         if (!_sessions.TryGetValue(sessionId, out var entry)) return null;
