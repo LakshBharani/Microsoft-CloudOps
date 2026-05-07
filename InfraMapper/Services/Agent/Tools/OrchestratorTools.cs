@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Azure;
 using InfraMapper.Models;
 using InfraMapper.Services;
+using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
@@ -44,6 +45,7 @@ public sealed class OrchestratorTools
         _logger = logger;
     }
 
+    [KernelFunction("get_infrastructure_graph")]
     [Description("Returns all Azure resources and dependency edges for a subscription. Call this to understand what exists before planning changes.")]
     public async Task<string> GetInfrastructureGraphAsync(
         [Description("Azure subscription ID")] string subscriptionId,
@@ -61,6 +63,7 @@ public sealed class OrchestratorTools
         catch (Exception ex) { return InternalError(ex); }
     }
 
+    [KernelFunction("get_resource")]
     [Description("Fetches a single Azure resource by its full ARM resource ID.")]
     public async Task<string> GetResourceAsync(
         [Description("Full ARM resource ID")] string resourceId,
@@ -78,6 +81,7 @@ public sealed class OrchestratorTools
         catch (Exception ex) { return InternalError(ex); }
     }
 
+    [KernelFunction("get_deployment_status")]
     [Description("Check provisioning status of an ARM deployment by name.")]
     public async Task<string> GetDeploymentStatusAsync(
         [Description("Azure subscription ID")] string subscriptionId,
@@ -97,6 +101,7 @@ public sealed class OrchestratorTools
         catch (Exception ex) { return InternalError(ex); }
     }
 
+    [KernelFunction("deploy_arm_template")]
     [Description("Deploys an ARM template to Azure. Requires an approved plan_id from plan_deployment.")]
     public async Task<string> DeployArmTemplateAsync(
         [Description("Approved plan_id from create_plan")] string planId,
@@ -149,6 +154,7 @@ public sealed class OrchestratorTools
         return JsonSerializer.Serialize(new { error = true, message = "Deployment failed after 3 attempts." });
     }
 
+    [KernelFunction("apply_resource_mutation")]
     [Description("Creates, updates, or deletes a single Azure resource. Requires an approved plan_id from create_plan.")]
     public async Task<string> ApplyResourceMutationAsync(
         [Description("Approved plan_id from create_plan")] string planId,

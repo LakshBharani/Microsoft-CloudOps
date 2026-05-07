@@ -3,11 +3,14 @@ using System.Text.Json;
 using Azure;
 using InfraMapper.Models;
 using InfraMapper.Services;
+using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
 public sealed class ExecutorTools
 {
+    private static readonly AsyncLocal<string?> CurrentPlanId = new();
+
     private readonly IArmDeploymentService _deploymentService;
     private readonly IApprovalService _approvalService;
     private readonly IResourceMutationApprovalService _mutationApprovals;
@@ -34,29 +37,38 @@ public sealed class ExecutorTools
         _subscriptionId = subscriptionId;
     }
 
+    public static IDisposable UsePlan(string planId)
+    {
+        var prior = CurrentPlanId.Value;
+        CurrentPlanId.Value = planId;
+        return new PlanScope(prior);
+    }
+
+    [KernelFunction("deploy_arm_template")]
     [Description("Deploy an ARM template to Azure. Requires an approved plan_id. " +
                  "Returns success:true on completion, or needs_replan:true if the template is invalid.")]
     public async Task<string> DeployArmTemplateAsync(
-        [Description("Approved plan_id from plan_deployment")] string planId,
-        [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscriptionId,
-        [Description("Deployment name")] string deploymentName,
-        [Description("Full ARM template as a JSON string")] string templateJson,
-        [Description("ARM parameters JSON string (optional)")] string? parametersJson = null,
-        [Description("Resource group name; omit for subscription-scoped deployments")] string? resourceGroupName = null,
+        [Description("Approved plan_id from plan_deployment. If omitted, backend uses the current approved execution plan.")] string? plan_id = null,
+        [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscription_id = "",
+        [Description("Deployment name")] string deployment_name = "",
+        [Description("Full ARM template as a JSON string")] string template_json = "",
+        [Description("ARM parameters JSON string (optional)")] string? parameters_json = null,
+        [Description("Resource group name; omit for subscription-scoped deployments")] string? resource_group_name = null,
         [Description("Required for subscription-scoped deployments")] string? location = null,
         [Description("Deployment mode: Incremental or Complete")] string mode = "Incremental",
         CancellationToken cancellationToken = default)
     {
-        if (!ValidatePlanApproved(planId, out var planError))
+        plan_id = ResolvePlanId(plan_id);
+        if (!ValidatePlanApproved(plan_id, out var planError))
             return planError!;
 
         var manifest = new DeploymentManifestRequest
         {
             SubscriptionId = _subscriptionId,
-            DeploymentName = deploymentName,
-            TemplateJson = templateJson,
-            ParametersJson = parametersJson,
-            ResourceGroupName = resourceGroupName,
+            DeploymentName = deployment_name,
+            TemplateJson = template_json,
+            ParametersJson = parameters_json,
+            ResourceGroupName = resource_group_name,
             Location = location,
             Mode = mode,
             WaitForCompletion = true
@@ -83,7 +95,7 @@ public sealed class ExecutorTools
                         error_type = ClassifyError(result.HttpStatus),
                         http_status = result.HttpStatus,
                         message = result.ErrorMessage,
-                        deployment_name = deploymentName,
+                        deployment_name,
                     });
             }
         }
@@ -110,34 +122,36 @@ public sealed class ExecutorTools
         return JsonSerializer.Serialize(new { error = true, message = "Deployment failed after 3 attempts." });
     }
 
+    [KernelFunction("apply_resource_mutation")]
     [Description("Create, update, or delete a single Azure resource. Requires an approved plan_id.")]
     public async Task<string> ApplyResourceMutationAsync(
-        [Description("Approved plan_id from plan_deployment")] string planId,
-        [Description("Full ARM resource ID")] string resourceId,
-        [Description("Operation: CreateOrUpdate or Delete")] string operation,
+        [Description("Approved plan_id from plan_deployment. If omitted, backend uses the current approved execution plan.")] string? plan_id = null,
+        [Description("Full ARM resource ID")] string resource_id = "",
+        [Description("Operation: CreateOrUpdate or Delete")] string operation = "",
         [Description("Resource location; required for CreateOrUpdate")] string? location = null,
-        [Description("Resource properties as JSON object string")] string? propertiesJson = null,
+        [Description("Resource properties as JSON object string")] string? properties_json = null,
         [Description("Tags to apply to the resource")] Dictionary<string, string>? tags = null,
-        [Description("SKU JSON, e.g. {\"name\":\"Standard_LRS\"}")] string? skuJson = null,
+        [Description("SKU JSON, e.g. {\"name\":\"Standard_LRS\"}")] string? sku_json = null,
         [Description("Resource kind")] string? kind = null,
         CancellationToken cancellationToken = default)
     {
-        if (!ValidatePlanApproved(planId, out var planError))
+        plan_id = ResolvePlanId(plan_id);
+        if (!ValidatePlanApproved(plan_id, out var planError))
             return planError!;
 
-        resourceId = NormalizeSubscriptionInResourceId(resourceId);
+        resource_id = NormalizeSubscriptionInResourceId(resource_id);
 
         if (!Enum.TryParse<ResourceMutationOperation>(operation, out var opEnum))
             return JsonSerializer.Serialize(new { error = true, message = $"Invalid operation '{operation}'." });
 
         var manifest = new ResourceMutationManifestRequest
         {
-            ResourceId = resourceId,
+            ResourceId = resource_id,
             Operation = opEnum,
             Location = location,
-            PropertiesJson = propertiesJson,
+            PropertiesJson = properties_json,
             Tags = tags,
-            SkuJson = skuJson,
+            SkuJson = sku_json,
             Kind = kind,
             WaitForCompletion = true
         };
@@ -167,7 +181,7 @@ public sealed class ExecutorTools
                         error_type = ClassifyError(result.HttpStatus),
                         http_status = result.HttpStatus,
                         message = result.ErrorMessage,
-                        resource_id = resourceId,
+                        resource_id,
                     });
             }
         }
@@ -194,11 +208,13 @@ public sealed class ExecutorTools
         return JsonSerializer.Serialize(new { error = true, message = "Mutation failed after 3 attempts." });
     }
 
+    [KernelFunction("get_plan_details")]
     [Description("Retrieve the full details of a plan by its plan_id, including all operations and metadata.")]
     public string GetPlanDetails(
-        [Description("The plan_id to retrieve")] string planId)
+        [Description("The plan_id to retrieve. If omitted, backend uses the current approved execution plan.")] string? plan_id = null)
     {
-        if (!Guid.TryParse(planId, out var guid))
+        plan_id = ResolvePlanId(plan_id);
+        if (!Guid.TryParse(plan_id, out var guid))
             return JsonSerializer.Serialize(new { error = true, message = "Invalid plan_id format." });
 
         var data = _planStore.GetPlanData(guid);
@@ -208,17 +224,18 @@ public sealed class ExecutorTools
         return data.Value.GetRawText();
     }
 
+    [KernelFunction("get_deployment_status")]
     [Description("Check provisioning status of an ARM deployment by name.")]
     public async Task<string> GetDeploymentStatusAsync(
-        [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscriptionId,
-        [Description("Deployment name")] string deploymentName,
-        [Description("Resource group name; omit for subscription-scoped deployments")] string? resourceGroupName = null,
+        [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscription_id,
+        [Description("Deployment name")] string deployment_name,
+        [Description("Resource group name; omit for subscription-scoped deployments")] string? resource_group_name = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
             var result = await _deploymentService.GetDeploymentAsync(
-                _subscriptionId, resourceGroupName, deploymentName, cancellationToken);
+                _subscriptionId, resource_group_name, deployment_name, cancellationToken);
             return JsonSerializer.Serialize(result);
         }
         catch (RequestFailedException ex) when (ex.Status is 429 or 503)
@@ -235,7 +252,10 @@ public sealed class ExecutorTools
         }
     }
 
-    private bool ValidatePlanApproved(string planIdStr, out string? error)
+    private static string? ResolvePlanId(string? planId) =>
+        string.IsNullOrWhiteSpace(planId) ? CurrentPlanId.Value : planId;
+
+    private bool ValidatePlanApproved(string? planIdStr, out string? error)
     {
         error = null;
         if (string.IsNullOrWhiteSpace(planIdStr) || !Guid.TryParse(planIdStr, out var planId))
@@ -263,6 +283,21 @@ public sealed class ExecutorTools
         }
 
         return true;
+    }
+
+    private sealed class PlanScope : IDisposable
+    {
+        private readonly string? _prior;
+
+        public PlanScope(string? prior)
+        {
+            _prior = prior;
+        }
+
+        public void Dispose()
+        {
+            CurrentPlanId.Value = _prior;
+        }
     }
 
     private static string ClassifyError(int? httpStatus) => httpStatus switch

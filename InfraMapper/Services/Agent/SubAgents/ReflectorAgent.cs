@@ -1,74 +1,37 @@
-using Anthropic;
-using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.Memory;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.Tools;
+using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
 public sealed class ReflectorAgent
 {
-    private readonly AnthropicClient _client;
+    private readonly SkAgentFactory _agentFactory;
     private readonly ILessonsStore _lessonsStore;
 
-    public ReflectorAgent(AnthropicClient client, ILessonsStore lessonsStore)
+    public ReflectorAgent(SkAgentFactory agentFactory, ILessonsStore lessonsStore)
     {
-        _client = client;
+        _agentFactory = agentFactory;
         _lessonsStore = lessonsStore;
     }
 
-    public (AnthropicAgent Agent, AgentTool Function) Build(AgentTool? clarificationTool = null)
+    public ChatCompletionAgent Build(object? clarificationPlugin = null)
     {
         var tools = new ReflectorTools(_lessonsStore);
-        var agentTools = BuildAgentTools(tools, clarificationTool);
+        var plugins = new List<(object Plugin, string Name)> { (tools, "reflector") };
+        if (clarificationPlugin is not null)
+            plugins.Add((clarificationPlugin, "clarification"));
 
-        var agent = new AnthropicAgent(
-            _client,
-            AgentRegistry.GetModel("reflector"),
+        return _agentFactory.Create(
+            "reflector",
             SystemPrompt,
-            agentTools);
-
-        var function = new AgentTool
-        {
-            Name = "reflect_on_deployment",
-            Description =
-                "Audit a completed deployment and record lessons for cross-session memory. " +
-                "Call this after every execute_plan (success or failure) to build institutional knowledge. " +
-                "Accepts a summary of what was deployed, what succeeded, and what failed.",
-            InputSchema = """{"type":"object","properties":{"summary":{"type":"string","description":"Summary of what was deployed, what succeeded, and what failed"}},"required":["summary"]}""",
-            Invoke = async (argsJson, ct) =>
-            {
-                var message = BuildUserMessage(argsJson);
-                return await agent.RunAsync(message, ct);
-            }
-        };
-
-        return (agent, function);
+            plugins.ToArray());
     }
 
-    private static string BuildUserMessage(string? argsJson)
+    public static string BuildUserMessage(string summary)
     {
-        if (string.IsNullOrWhiteSpace(argsJson)) return "Reflect on the deployment.";
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
-            var root = doc.RootElement;
-            var summary = root.TryGetProperty("summary", out var s) ? s.GetString() : null;
-            return $"Reflect on this deployment:\n{summary ?? "No summary provided"}";
-        }
-        catch { return "Reflect on the deployment."; }
-    }
-
-    private static IList<AgentTool> BuildAgentTools(ReflectorTools tools, AgentTool? clarificationTool)
-    {
-        List<AgentTool> toolsList =
-        [
-            AgentToolFactory.Create(tools.WriteLesson,
-                "write_lesson",
-                "Write a lesson learned from this deployment to persistent memory."),
-        ];
-        if (clarificationTool is not null)
-            toolsList.Add(clarificationTool);
-        return toolsList;
+        return $"Reflect on this deployment:\n{summary}";
     }
 
     private const string SystemPrompt = """

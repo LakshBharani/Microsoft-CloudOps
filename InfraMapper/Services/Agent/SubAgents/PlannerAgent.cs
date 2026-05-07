@@ -1,93 +1,44 @@
-using Anthropic;
-using InfraMapper.Services.Agent.AgentFramework;
 using InfraMapper.Services.Agent.Memory;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.Tools;
+using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
 public sealed class PlannerAgent
 {
-    private readonly AnthropicClient _client;
+    private readonly SkAgentFactory _agentFactory;
     private readonly PlanStore _planStore;
     private readonly ILessonsStore _lessonsStore;
 
-    public PlannerAgent(AnthropicClient client, PlanStore planStore, ILessonsStore lessonsStore)
+    public PlannerAgent(SkAgentFactory agentFactory, PlanStore planStore, ILessonsStore lessonsStore)
     {
-        _client = client;
+        _agentFactory = agentFactory;
         _planStore = planStore;
         _lessonsStore = lessonsStore;
     }
 
-    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(string sessionId, AgentTool? clarificationTool = null)
+    public (ChatCompletionAgent Agent, PlannerTools Tools) BuildForSession(string sessionId, object? clarificationPlugin = null)
     {
         var tools = new PlannerTools(_planStore, _lessonsStore, sessionId);
-        var agentTools = BuildAgentTools(tools, clarificationTool);
+        var plugins = new List<(object Plugin, string Name)> { (tools, "planner") };
+        if (clarificationPlugin is not null)
+            plugins.Add((clarificationPlugin, "clarification"));
 
-        var agent = new AnthropicAgent(
-            _client,
-            AgentRegistry.GetModel("planner"),
+        var agent = _agentFactory.Create(
+            "planner",
             SystemPrompt,
-            agentTools);
+            plugins.ToArray());
 
-        var function = new AgentTool
-        {
-            Name = "plan_deployment",
-            Description =
-                "Generate a complete ARM deployment plan for the given intent. " +
-                "The planner drafts an ARM template, self-critiques it, revises it, then registers the plan. " +
-                "Returns plan JSON including plan_id, title, operations, and risk_level. " +
-                "Always call this instead of create_plan when you need to deploy Azure resources.",
-            InputSchema = """{"type":"object","properties":{"intent":{"type":"string","description":"What the user wants to deploy or change"},"investigator_summary":{"type":"string","description":"Optional summary from the investigator agent"}},"required":["intent"]}""",
-            Invoke = async (argsJson, ct) =>
-            {
-                var (message, intent) = BuildUserMessage(argsJson);
-                tools.BeginPlan(intent);
-                return await agent.RunAsync(message, ct);
-            }
-        };
-
-        return (agent, function);
+        return (agent, tools);
     }
 
-    private static (string Message, string Intent) BuildUserMessage(string? argsJson)
+    public static string BuildUserMessage(string intent, string? investigatorSummary = null)
     {
-        if (string.IsNullOrWhiteSpace(argsJson)) return ("Plan the deployment.", "");
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
-            var root = doc.RootElement;
-            var intent  = root.TryGetProperty("intent", out var i) ? i.GetString() : null;
-            var summary = root.TryGetProperty("investigator_summary", out var s) ? s.GetString() : null;
-            var msg = $"Plan deployment: {intent ?? "as described"}";
-            if (!string.IsNullOrWhiteSpace(summary))
-                msg += $"\n\nInvestigator summary:\n{summary}";
-            return (msg, intent ?? "");
-        }
-        catch { return ("Plan the deployment.", ""); }
-    }
-
-    // ─── Internal tool wiring ────────────────────────────────────────────────
-
-    private static IList<AgentTool> BuildAgentTools(PlannerTools tools, AgentTool? clarificationTool)
-    {
-        List<AgentTool> toolsList =
-        [
-            // Step 0 (optional): look up past lessons before drafting.
-            AgentToolFactory.Create(tools.GetLessons,
-                "get_lessons",
-                "Retrieve past deployment lessons for specific Azure resource types."),
-            // Step 2: forced critique commit before create_plan.
-            AgentToolFactory.Create(tools.RecordCritique,
-                "record_critique",
-                "Record a self-critique of the current ARM template draft."),
-            // Step 3: final plan creation.
-            AgentToolFactory.Create(tools.CreatePlan,
-                "create_plan",
-                "Create and register the final deployment plan after self-critique."),
-        ];
-        if (clarificationTool is not null)
-            toolsList.Add(clarificationTool);
-        return toolsList;
+        var msg = $"Plan deployment: {intent}";
+        if (!string.IsNullOrWhiteSpace(investigatorSummary))
+            msg += $"\n\nInvestigator summary:\n{investigatorSummary}";
+        return msg;
     }
 
     // ─── System prompt ───────────────────────────────────────────────────────

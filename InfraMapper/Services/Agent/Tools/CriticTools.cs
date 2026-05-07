@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
@@ -14,11 +15,12 @@ public sealed class CriticTools
         _revisionCount = revisionCount;
     }
 
+    [KernelFunction("get_plan_details")]
     [Description("Retrieve full details of a plan by its plan_id, including all operations and metadata.")]
     public string GetPlanDetails(
-        [Description("The plan_id returned by plan_deployment")] string planId)
+        [Description("The plan_id returned by plan_deployment")] string plan_id)
     {
-        if (!Guid.TryParse(planId, out var guid))
+        if (!Guid.TryParse(plan_id, out var guid))
             return JsonSerializer.Serialize(new { error = true, message = "Invalid plan_id format." });
 
         var data = _planStore.GetPlanData(guid);
@@ -28,20 +30,21 @@ public sealed class CriticTools
         return data.Value.GetRawText();
     }
 
+    [KernelFunction("record_verdict")]
     [Description("Record the critic's verdict for a plan. Call this after completing your analysis.")]
     public string RecordVerdict(
-        [Description("The plan_id that was reviewed")] string planId,
+        [Description("The plan_id that was reviewed")] string plan_id,
         [Description("true if the plan passes all checks, false if it needs revision")] bool approved,
         [Description("Detailed feedback: if approved, confirm what passed; if rejected, specify exactly what must change")] string feedback)
     {
-        if (!Guid.TryParse(planId, out var guid))
+        if (!Guid.TryParse(plan_id, out var guid))
             return JsonSerializer.Serialize(new { error = true, message = "Invalid plan_id format." });
 
         _planStore.TrySetCriticVerdict(guid, approved, feedback, _revisionCount);
 
         return JsonSerializer.Serialize(new
         {
-            plan_id = planId,
+            plan_id,
             approved,
             feedback,
             revision_count = _revisionCount,

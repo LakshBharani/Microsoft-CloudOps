@@ -1,4 +1,4 @@
-namespace InfraMapper.Services.Agent.AgentFramework;
+namespace InfraMapper.Services.Agent.Runtime;
 
 public abstract record AgentStreamEvent
 {

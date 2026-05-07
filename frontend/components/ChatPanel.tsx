@@ -48,7 +48,7 @@ const AGENT_LABELS: Record<string, string> = {
   reflect_on_deployment: "Reflector",
 };
 
-const ORCHESTRATOR_MODEL = "claude-haiku-4-5";
+const ORCHESTRATOR_MODEL = "gpt-4.1-mini";
 
 function formatModelName(model?: string) {
   return model?.replace(/^claude-/, "").replace(/-/g, " ");

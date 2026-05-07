@@ -209,5 +209,44 @@
     ],
     "whatFailed": "None \u2014 first-try success. However, resource group deletion required sequenced planning: Phase 1 deleted child resources and RG itself; Phase 2 recreated RG and child resources in correct dependency order.",
     "recommendation": "When performing delete-and-recreate operations that include resource group deletion, sequence in two phases: Phase 1 deletes all child resources, then the RG; Phase 2 creates the RG, then provisions child resources in dependency order. For App Service deployments, always include explicit dependsOn clauses in ARM templates in addition to serverFarmId references to guarantee correct deployment ordering of Web Apps to App Service Plans. Clarify App Service Plan SKU with stakeholders early (F1 Free vs paid tiers like B1) since F1 carries no SLA and has CPU/memory constraints unsuitable for production."
+  },
+  {
+    "id": "022f0ea7-fcbe-46ce-b14f-a7d47b5da6e9",
+    "timestamp": "2026-05-07T03:42:20.121021+00:00",
+    "intentSummary": "Update tags and SKUs on resource group, storage account, and app service plan; create new Linux Web App in resource group rg-im-demo",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "When updating SKUs and tags on existing resources like storage accounts and app service plans, ensure compatibility of SKU changes with existing resource configurations to avoid downtime. For creating Linux Web Apps, verify that the app service plan supports Linux workloads and the selected SKU meets the app requirements."
+  },
+  {
+    "id": "b164f2a0-4c07-4ce6-8303-f0005ecca75e",
+    "timestamp": "2026-05-07T03:49:24.452742+00:00",
+    "intentSummary": "Update tags and SKUs on resource group, storage account, and app service plan; create Linux web app in resource group rg-im-demo",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "When updating SKUs and tags on existing resources, ensure compatibility of SKU changes with the resource type and region. Creating Linux web apps requires specifying the correct app service plan kind and SKU. Always verify resource group existence before updates and creations."
+  },
+  {
+    "id": "ac8e1c6e-8ffd-4502-8d72-f1e8f2c9dc93",
+    "timestamp": "2026-05-07T03:53:20.661846+00:00",
+    "intentSummary": "Update tags and SKUs on resource group, storage account, and app service plan; create new Linux web app in resource group rg-im-demo",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "When updating SKUs and tags on existing resources and creating new web apps, ensure that the resource group is properly tagged and that SKU changes are compatible with the existing resource configurations to avoid downtime. Also, verify that the Linux web app settings align with the app service plan\u0027s capabilities."
   }
 ]

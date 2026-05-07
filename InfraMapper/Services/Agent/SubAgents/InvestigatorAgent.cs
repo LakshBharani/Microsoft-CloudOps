@@ -1,84 +1,44 @@
-using Anthropic;
-using InfraMapper.Services.Agent.AgentFramework;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.Tools;
+using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
 public sealed class InvestigatorAgent
 {
-    private readonly AnthropicClient _client;
+    private readonly SkAgentFactory _agentFactory;
     private readonly AzureResourceService _resourceService;
     private readonly IArmGenericResourceService _genericResources;
 
     public InvestigatorAgent(
-        AnthropicClient client,
+        SkAgentFactory agentFactory,
         AzureResourceService resourceService,
         IArmGenericResourceService genericResources)
     {
-        _client = client;
+        _agentFactory = agentFactory;
         _resourceService = resourceService;
         _genericResources = genericResources;
     }
 
-    public (AnthropicAgent Agent, AgentTool Function) Build(AgentTool? clarificationTool = null)
+    public ChatCompletionAgent Build(object? clarificationPlugin = null)
     {
         var tools = new InvestigatorTools(_resourceService, _genericResources);
-        var agentTools = BuildAgentTools(tools, clarificationTool);
+        var plugins = new List<(object Plugin, string Name)> { (tools, "investigator") };
+        if (clarificationPlugin is not null)
+            plugins.Add((clarificationPlugin, "clarification"));
 
-        var agent = new AnthropicAgent(
-            _client,
-            AgentRegistry.GetModel("investigator"),
+        return _agentFactory.Create(
+            "investigator",
             SystemPrompt,
-            agentTools);
-
-        var function = new AgentTool
-        {
-            Name = "investigate_infrastructure",
-            Description =
-                "Investigate Azure infrastructure for a given focus area (e.g. 'storage accounts', 'VMs in westus2'). " +
-                "Returns a structured summary of existing resources and their dependencies relevant to the focus. " +
-                "Call this before plan_deployment to understand what already exists.",
-            InputSchema = """{"type":"object","properties":{"focus":{"type":"string","description":"The infrastructure focus area to investigate"},"subscription_id":{"type":"string","description":"Optional subscription ID override"}},"required":["focus"]}""",
-            Invoke = async (argsJson, ct) =>
-            {
-                var message = BuildUserMessage(argsJson);
-                return await agent.RunAsync(message, ct);
-            }
-        };
-
-        return (agent, function);
+            plugins.ToArray());
     }
 
-    private static string BuildUserMessage(string? argsJson)
+    public static string BuildUserMessage(string focus, string? subscriptionId = null)
     {
-        if (string.IsNullOrWhiteSpace(argsJson)) return "Investigate the infrastructure.";
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
-            var root = doc.RootElement;
-            var focus = root.TryGetProperty("focus", out var f) ? f.GetString() : null;
-            var subId = root.TryGetProperty("subscription_id", out var s) ? s.GetString() : null;
-            var msg = $"Investigate infrastructure for: {focus ?? "general overview"}";
-            if (!string.IsNullOrWhiteSpace(subId)) msg += $". Subscription: {subId}";
-            return msg;
-        }
-        catch { return "Investigate the infrastructure."; }
-    }
-
-    private static IList<AgentTool> BuildAgentTools(InvestigatorTools tools, AgentTool? clarificationTool)
-    {
-        List<AgentTool> toolsList =
-        [
-            AgentToolFactory.Create(tools.GetInfrastructureGraphAsync,
-                "get_infrastructure_graph",
-                "Get the full Azure infrastructure graph for a subscription."),
-            AgentToolFactory.Create(tools.GetResourceAsync,
-                "get_resource",
-                "Get details of a specific Azure resource by ARM ID."),
-        ];
-        if (clarificationTool is not null)
-            toolsList.Add(clarificationTool);
-        return toolsList;
+        var msg = $"Investigate infrastructure for: {focus}";
+        if (!string.IsNullOrWhiteSpace(subscriptionId))
+            msg += $". Subscription: {subscriptionId}";
+        return msg;
     }
 
     private const string SystemPrompt = """

@@ -1,13 +1,15 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using InfraMapper.Services.Agent.Tools;
 
-namespace InfraMapper.Services.Agent.AgentFramework;
+namespace InfraMapper.Services.Agent.Runtime;
 
 public sealed class SseEventTranslator
 {
     private readonly string _sessionId;
     private readonly PlanStore _planStore;
+    private readonly QuestionStore _questionStore;
     private readonly bool _autoApprovePlan;
 
     public static readonly HashSet<string> SubAgentToolNames = new(StringComparer.OrdinalIgnoreCase)
@@ -29,10 +31,11 @@ public sealed class SseEventTranslator
     private int _planRevisionCount;           // incremented each time Critic rejects
     private readonly HashSet<string> _emittedQuestionIds = new(StringComparer.OrdinalIgnoreCase);
 
-    public SseEventTranslator(string sessionId, PlanStore planStore, bool autoApprovePlan)
+    public SseEventTranslator(string sessionId, PlanStore planStore, QuestionStore questionStore, bool autoApprovePlan)
     {
         _sessionId = sessionId;
         _planStore = planStore;
+        _questionStore = questionStore;
         _autoApprovePlan = autoApprovePlan;
     }
 
@@ -211,6 +214,13 @@ public sealed class SseEventTranslator
             });
 
         var text = textBuilder.ToString();
+        if (_emittedQuestionIds.Count == 0 && LooksLikePlainTextQuestion(text))
+        {
+            foreach (var evt in BuildPlainTextFallbackQuestion(text))
+                yield return evt;
+            text = "Please answer the clarification.";
+        }
+
         yield return Evt("reply", new
         {
             content    = text.Length > 0 ? text : "Done.",
@@ -336,6 +346,60 @@ public sealed class SseEventTranslator
         }
     }
 
+    private IEnumerable<string> BuildPlainTextFallbackQuestion(string prompt)
+    {
+        var options = new[]
+        {
+            new QuestionOptionDto("Confirm", "confirm", "The listed details are correct; continue planning."),
+            new QuestionOptionDto("Needs correction", "needs_correction", "I will provide corrections before planning continues.")
+        };
+
+        var questionData = JsonSerializer.SerializeToElement(new
+        {
+            title = "Confirm infrastructure details",
+            prompt,
+            options,
+            default_value = "confirm",
+            allow_custom = true,
+            category = "general",
+            confirmation_scope = (string?)null,
+            originating_agent = "orchestrator"
+        }, OrchestratorTools.SnakeCaseOpts);
+
+        var questionId = _questionStore.CreateQuestion(_sessionId, questionData).ToString();
+        _emittedQuestionIds.Add(questionId);
+
+        yield return Evt("question", new
+        {
+            question_id = questionId,
+            title = "Confirm infrastructure details",
+            prompt,
+            options,
+            default_value = "confirm",
+            allow_custom = true,
+            category = "general",
+            confirmation_scope = (string?)null,
+            originating_agent = "orchestrator",
+            session_id = _sessionId
+        });
+    }
+
+    private static bool LooksLikePlainTextQuestion(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || !text.Contains('?'))
+            return false;
+
+        return ContainsAny(text,
+            "could you please confirm",
+            "please confirm",
+            "provide any corrections",
+            "need to confirm",
+            "can you confirm",
+            "would you like",
+            "which option",
+            "choose");
+    }
+
     private static bool IsQuestionResult(string resultJson)
     {
         try
@@ -345,6 +409,9 @@ public sealed class SseEventTranslator
         }
         catch { return false; }
     }
+
+    private static bool ContainsAny(string value, params string[] needles) =>
+        needles.Any(n => value.Contains(n, StringComparison.OrdinalIgnoreCase));
 
     private static string ExtractJsonObject(string text)
     {

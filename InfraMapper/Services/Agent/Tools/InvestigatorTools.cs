@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Azure;
 using InfraMapper.Services;
+using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
@@ -18,6 +19,7 @@ public sealed class InvestigatorTools
         _genericResources = genericResources;
     }
 
+    [KernelFunction("get_infrastructure_graph")]
     [Description("Returns all Azure resources and dependency edges for a subscription. " +
                  "Call this first to understand existing infrastructure before planning changes. " +
                  "If the initial result is insufficient for the investigation focus, call again with a different subscription.")]
@@ -48,6 +50,7 @@ public sealed class InvestigatorTools
         }
     }
 
+    [KernelFunction("get_resource")]
     [Description("Fetches a single Azure resource by its full ARM resource ID. " +
                  "Use this to get detailed properties, SKU, and configuration of a specific resource.")]
     public async Task<string> GetResourceAsync(

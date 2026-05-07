@@ -1,12 +1,12 @@
-using Anthropic;
-using InfraMapper.Services.Agent.AgentFramework;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.Tools;
+using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
 public sealed class ExecutorAgent
 {
-    private readonly AnthropicClient _client;
+    private readonly SkAgentFactory _agentFactory;
     private readonly IArmDeploymentService _deploymentService;
     private readonly IApprovalService _approvalService;
     private readonly IResourceMutationApprovalService _mutationApprovals;
@@ -14,14 +14,14 @@ public sealed class ExecutorAgent
     private readonly PlanStore _planStore;
 
     public ExecutorAgent(
-        AnthropicClient client,
+        SkAgentFactory agentFactory,
         IArmDeploymentService deploymentService,
         IApprovalService approvalService,
         IResourceMutationApprovalService mutationApprovals,
         IArmGenericResourceService genericResources,
         PlanStore planStore)
     {
-        _client = client;
+        _agentFactory = agentFactory;
         _deploymentService = deploymentService;
         _approvalService = approvalService;
         _mutationApprovals = mutationApprovals;
@@ -29,75 +29,28 @@ public sealed class ExecutorAgent
         _planStore = planStore;
     }
 
-    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(
+    public ChatCompletionAgent BuildForSession(
         string sessionId,
         string subscriptionId,
-        AgentTool? clarificationTool = null)
+        object? clarificationPlugin = null)
     {
         var tools = new ExecutorTools(
             _deploymentService, _approvalService, _mutationApprovals,
             _genericResources, _planStore, sessionId, subscriptionId);
 
-        var agentTools = BuildAgentTools(tools, clarificationTool);
+        var plugins = new List<(object Plugin, string Name)> { (tools, "executor") };
+        if (clarificationPlugin is not null)
+            plugins.Add((clarificationPlugin, "clarification"));
 
-        var agent = new AnthropicAgent(
-            _client,
-            AgentRegistry.GetModel("executor"),
+        return _agentFactory.Create(
+            "executor",
             SystemPrompt,
-            agentTools);
-
-        var function = new AgentTool
-        {
-            Name = "execute_plan",
-            Description =
-                "Apply an approved deployment plan to Azure. " +
-                "Returns success:true when complete, or needs_replan:true with error details " +
-                "if the template is invalid and the plan must be revised. " +
-                "Only call this after the user has approved the plan.",
-            InputSchema = """{"type":"object","properties":{"plan_id":{"type":"string","description":"The approved plan_id to execute"}},"required":["plan_id"]}""",
-            Invoke = async (argsJson, ct) =>
-            {
-                var message = BuildUserMessage(argsJson);
-                return await agent.RunAsync(message, ct);
-            }
-        };
-
-        return (agent, function);
+            plugins.ToArray());
     }
 
-    private static string BuildUserMessage(string? argsJson)
+    public static string BuildUserMessage(string planId)
     {
-        if (string.IsNullOrWhiteSpace(argsJson)) return "Execute the approved plan.";
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
-            var root = doc.RootElement;
-            var planId = root.TryGetProperty("plan_id", out var p) ? p.GetString() : null;
-            return $"Execute plan with id: {planId ?? "latest"}";
-        }
-        catch { return "Execute the approved plan."; }
-    }
-
-    private static IList<AgentTool> BuildAgentTools(ExecutorTools tools, AgentTool? clarificationTool)
-    {
-        List<AgentTool> toolsList =
-        [
-            AgentToolFactory.Create(tools.GetPlanDetails,
-                "get_plan_details",
-                "Retrieve the full plan including all operations. Call this first to know what to deploy."),
-            AgentToolFactory.Create(tools.DeployArmTemplateAsync,
-                "deploy_arm_template",
-                "Deploy an ARM template to Azure. Requires an approved plan_id."),
-            AgentToolFactory.Create(tools.ApplyResourceMutationAsync,
-                "apply_resource_mutation",
-                "Apply a resource mutation (update/delete) to Azure. Requires an approved plan_id."),
-            AgentToolFactory.Create(tools.GetDeploymentStatusAsync,
-                "get_deployment_status",
-                "Get the status of an Azure deployment by name."),
-        ];
-        if (clarificationTool is not null)
-            toolsList.Add(clarificationTool);
-        return toolsList;
+        return $"Execute plan with id: {planId}";
     }
 
     private const string SystemPrompt = """

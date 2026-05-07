@@ -1,17 +1,17 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using Anthropic;
-using InfraMapper.Services.Agent.AgentFramework;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.SubAgents;
 using InfraMapper.Services.Agent.Tools;
+using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent;
 
 public sealed class ConversationStore
 {
     public sealed record SessionEntry(
-        AnthropicAgent Agent,
-        AnthropicAgentSession Session,
+        ChatCompletionAgent Agent,
+        SkAgentSession Session,
         DateTimeOffset LastAccessed);
 
     private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new();
@@ -24,7 +24,8 @@ public sealed class ConversationStore
     private readonly IArmGenericResourceService _genericResources;
     private readonly PlanStore _planStore;
     private readonly QuestionStore _questionStore;
-    private readonly AnthropicClient _anthropicClient;
+    private readonly SkAgentFactory _agentFactory;
+    private readonly SkAgentRunner _runner;
     private readonly InvestigatorAgent _investigatorAgent;
     private readonly PlannerAgent _plannerAgent;
     private readonly CriticAgent _criticAgent;
@@ -41,7 +42,8 @@ public sealed class ConversationStore
         IArmGenericResourceService genericResources,
         PlanStore planStore,
         QuestionStore questionStore,
-        AnthropicClient anthropicClient,
+        SkAgentFactory agentFactory,
+        SkAgentRunner runner,
         InvestigatorAgent investigatorAgent,
         PlannerAgent plannerAgent,
         CriticAgent criticAgent,
@@ -57,7 +59,8 @@ public sealed class ConversationStore
         _genericResources = genericResources;
         _planStore = planStore;
         _questionStore = questionStore;
-        _anthropicClient = anthropicClient;
+        _agentFactory = agentFactory;
+        _runner = runner;
         _investigatorAgent = investigatorAgent;
         _plannerAgent = plannerAgent;
         _criticAgent = criticAgent;
@@ -81,30 +84,36 @@ public sealed class ConversationStore
             _mutationApprovals, _genericResources, _planStore,
             sessionId, _loggerFactory.CreateLogger<OrchestratorTools>());
 
-        // Build sub-agents for this session and get their agent-tool functions.
-        var questionFn             = _questionerAgent.BuildFunctionForSession(sessionId, "orchestrator");
-        var investigatorQuestionFn = _questionerAgent.BuildFunctionForSession(sessionId, "investigator");
-        var plannerQuestionFn      = _questionerAgent.BuildFunctionForSession(sessionId, "planner");
-        var criticQuestionFn       = _questionerAgent.BuildFunctionForSession(sessionId, "critic");
-        var executorQuestionFn     = _questionerAgent.BuildFunctionForSession(sessionId, "executor");
-        var reflectorQuestionFn    = _questionerAgent.BuildFunctionForSession(sessionId, "reflector");
+        var orchestratorQuestioner = _questionerAgent.BuildForSession(sessionId, "orchestrator");
+        var investigatorQuestioner = _questionerAgent.BuildForSession(sessionId, "investigator");
+        var plannerQuestioner = _questionerAgent.BuildForSession(sessionId, "planner");
+        var criticQuestioner = _questionerAgent.BuildForSession(sessionId, "critic");
+        var executorQuestioner = _questionerAgent.BuildForSession(sessionId, "executor");
+        var reflectorQuestioner = _questionerAgent.BuildForSession(sessionId, "reflector");
 
-        var (_, investigateFn)    = _investigatorAgent.Build(investigatorQuestionFn);
-        var (_, planDeploymentFn) = _plannerAgent.BuildForSession(sessionId, plannerQuestionFn);
-        var (_, critiquePlanFn)   = _criticAgent.BuildForSession(clarificationTool: criticQuestionFn);
-        var (_, executePlanFn)    = _executorAgent.BuildForSession(sessionId, subscriptionId, executorQuestionFn);
-        var (_, reflectFn)        = _reflectorAgent.Build(reflectorQuestionFn);
+        var investigator = _investigatorAgent.Build(new OrchestratorPluginClarifier(_runner, investigatorQuestioner, "investigator"));
+        var (planner, plannerTools) = _plannerAgent.BuildForSession(sessionId, new OrchestratorPluginClarifier(_runner, plannerQuestioner, "planner"));
+        var critic = _criticAgent.BuildForSession(clarificationPlugin: new OrchestratorPluginClarifier(_runner, criticQuestioner, "critic"));
+        var executor = _executorAgent.BuildForSession(sessionId, subscriptionId, new OrchestratorPluginClarifier(_runner, executorQuestioner, "executor"));
+        var reflector = _reflectorAgent.Build(new OrchestratorPluginClarifier(_runner, reflectorQuestioner, "reflector"));
 
-        var agentTools = BuildAgentTools(orcTools, investigateFn, planDeploymentFn, critiquePlanFn, questionFn, executePlanFn, reflectFn);
-        var model = AgentRegistry.GetModel("orchestrator");
+        var orchestratorPlugin = new OrchestratorPlugin(
+            _runner,
+            investigator,
+            planner,
+            plannerTools,
+            critic,
+            orchestratorQuestioner,
+            executor,
+            reflector);
 
-        var agent = new AnthropicAgent(
-            _anthropicClient,
-            model,
+        var agent = _agentFactory.Create(
+            "orchestrator",
             BuildSystemPrompt(subscriptionId),
-            agentTools);
+            (orchestratorPlugin, "orchestrator"),
+            (orcTools, "azure"));
 
-        var session = new AnthropicAgentSession();
+        var session = new SkAgentSession();
         var entry = new SessionEntry(agent, session, DateTimeOffset.UtcNow);
 
         // Use AddOrUpdate to handle the rare case of concurrent first requests.
@@ -193,36 +202,6 @@ public sealed class ConversationStore
         foreach (var key in _sessions.Keys)
             if (_sessions.TryGetValue(key, out var entry) && entry.LastAccessed < cutoff)
                 _sessions.TryRemove(key, out _);
-    }
-
-    private static IList<AgentTool> BuildAgentTools(
-        OrchestratorTools tools,
-        AgentTool investigateFn,
-        AgentTool planDeploymentFn,
-        AgentTool critiquePlanFn,
-        AgentTool questionFn,
-        AgentTool executePlanFn,
-        AgentTool reflectFn)
-    {
-        return
-        [
-            // Investigator: resource discovery with self-reflection.
-            investigateFn,
-            // Planner: draft → get_lessons → record_critique → create_plan.
-            planDeploymentFn,
-            // Critic: validate plan; approved/rejected with actionable feedback.
-            critiquePlanFn,
-            // Questioner: ask user when planning is blocked by ambiguity.
-            questionFn,
-            // Executor: applies approved plans; returns needs_replan:true on failures.
-            executePlanFn,
-            // Reflector: post-deployment audit; writes lessons to persistent store.
-            reflectFn,
-            // Direct read: deployment status check for ad-hoc queries.
-            AgentToolFactory.Create(tools.GetDeploymentStatusAsync,
-                "get_deployment_status",
-                "Get the status of an Azure deployment by subscription, deployment name, and optional resource group."),
-        ];
     }
 
     private static string BuildSystemPrompt(string subscriptionId) => $"""

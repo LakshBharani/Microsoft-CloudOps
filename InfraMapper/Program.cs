@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using Anthropic;
 using DotNetEnv;
 using Azure.Identity;
 using Azure.Core;
@@ -7,11 +6,14 @@ using Azure.ResourceManager;
 using InfraMapper.Services;
 using InfraMapper.Services.Agent;
 using InfraMapper.Services.Agent.Memory;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.SubAgents;
+using Microsoft.SemanticKernel;
 
 Env.TraversePath().Load();
 
 var builder = WebApplication.CreateBuilder(args);
+AgentRegistry.Configure(builder.Configuration);
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<AzureResourceService>();
@@ -39,17 +41,48 @@ builder.Services.AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 
-var anthropicApiKey = builder.Configuration["Anthropic:ApiKey"]
-    ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
-    ?? throw new InvalidOperationException(
-        "Anthropic API key not configured. Set Anthropic:ApiKey in config or ANTHROPIC_API_KEY env var.");
+builder.Services.AddSingleton(sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var endpoint = configuration["AzureAI:Endpoint"]
+        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
+        ?? throw new InvalidOperationException(
+            "Azure OpenAI endpoint not configured. Set AzureAI:Endpoint or AZURE_OPENAI_ENDPOINT to the resource endpoint, e.g. https://<resource>.openai.azure.com/ or https://<resource>.cognitiveservices.azure.com/.");
+    var deploymentName = configuration["AzureAI:DeploymentName"]
+        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT")
+        ?? "gpt-4.1-mini";
+    var modelId = configuration["AzureAI:ModelId"]
+        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
+        ?? deploymentName;
+    var apiKey = configuration["AzureAI:ApiKey"]
+        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
 
-// Register AnthropicClient (direct Anthropic SDK).
-builder.Services.AddSingleton(_ => new Anthropic.AnthropicClient { ApiKey = anthropicApiKey });
+    var kernelBuilder = Kernel.CreateBuilder();
+    if (!string.IsNullOrWhiteSpace(apiKey))
+    {
+        kernelBuilder.AddAzureOpenAIChatCompletion(
+            deploymentName: deploymentName,
+            endpoint: endpoint,
+            apiKey: apiKey,
+            modelId: modelId);
+    }
+    else
+    {
+        kernelBuilder.AddAzureOpenAIChatCompletion(
+            deploymentName: deploymentName,
+            endpoint: endpoint,
+            credentials: sp.GetRequiredService<TokenCredential>(),
+            modelId: modelId);
+    }
+
+    return kernelBuilder.Build();
+});
 
 builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<QuestionStore>();
 builder.Services.AddSingleton<ILessonsStore, JsonFileLessonsStore>();
+builder.Services.AddSingleton<SkAgentRunner>();
+builder.Services.AddSingleton<SkAgentFactory>();
 builder.Services.AddSingleton<InvestigatorAgent>();
 builder.Services.AddSingleton<PlannerAgent>();
 builder.Services.AddSingleton<CriticAgent>();
@@ -74,26 +107,4 @@ app.UseCors();
 app.UseHttpsRedirection();
 app.MapControllers();
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast(
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
-
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}

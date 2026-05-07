@@ -1,76 +1,36 @@
-using Anthropic;
-using InfraMapper.Services.Agent.AgentFramework;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.Tools;
+using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent.SubAgents;
 
 public sealed class CriticAgent
 {
-    private readonly AnthropicClient _client;
+    private readonly SkAgentFactory _agentFactory;
     private readonly PlanStore _planStore;
 
-    public CriticAgent(AnthropicClient client, PlanStore planStore)
+    public CriticAgent(SkAgentFactory agentFactory, PlanStore planStore)
     {
-        _client = client;
+        _agentFactory = agentFactory;
         _planStore = planStore;
     }
 
-    public (AnthropicAgent Agent, AgentTool Function) BuildForSession(int revisionCount = 0, AgentTool? clarificationTool = null)
+    public ChatCompletionAgent BuildForSession(int revisionCount = 0, object? clarificationPlugin = null)
     {
         var tools = new CriticTools(_planStore, revisionCount);
-        var agentTools = BuildAgentTools(tools, clarificationTool);
+        var plugins = new List<(object Plugin, string Name)> { (tools, "critic") };
+        if (clarificationPlugin is not null)
+            plugins.Add((clarificationPlugin, "clarification"));
 
-        var agent = new AnthropicAgent(
-            _client,
-            AgentRegistry.GetModel("critic"),
+        return _agentFactory.Create(
+            "critic",
             SystemPrompt,
-            agentTools);
-
-        var function = new AgentTool
-        {
-            Name = "critique_plan",
-            Description =
-                "Validate a deployment plan for correctness, naming rules, dependency ordering, " +
-                "region/SKU compatibility, and security. Returns { approved, feedback, plan_id, revision_count }. " +
-                "You MUST call this after every plan_deployment before presenting a plan to the user.",
-            InputSchema = """{"type":"object","properties":{"plan_id":{"type":"string","description":"The plan_id to critique"}},"required":["plan_id"]}""",
-            Invoke = async (argsJson, ct) =>
-            {
-                var message = BuildUserMessage(argsJson);
-                return await agent.RunAsync(message, ct);
-            }
-        };
-
-        return (agent, function);
+            plugins.ToArray());
     }
 
-    private static string BuildUserMessage(string? argsJson)
+    public static string BuildUserMessage(string planId)
     {
-        if (string.IsNullOrWhiteSpace(argsJson)) return "Critique the current plan.";
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
-            var root = doc.RootElement;
-            var planId = root.TryGetProperty("plan_id", out var p) ? p.GetString() : null;
-            return $"Critique plan with id: {planId ?? "latest"}";
-        }
-        catch { return "Critique the current plan."; }
-    }
-
-    private static IList<AgentTool> BuildAgentTools(CriticTools tools, AgentTool? clarificationTool)
-    {
-        List<AgentTool> toolsList =
-        [
-            AgentToolFactory.Create(tools.GetPlanDetails,
-                "get_plan_details",
-                "Retrieve the full details of a deployment plan by plan_id."),
-            AgentToolFactory.Create(tools.RecordVerdict,
-                "record_verdict",
-                "Record the critic verdict (approved/rejected) with detailed feedback."),
-        ];
-        if (clarificationTool is not null)
-            toolsList.Add(clarificationTool);
-        return toolsList;
+        return $"Critique plan with id: {planId}";
     }
 
     private const string SystemPrompt = """

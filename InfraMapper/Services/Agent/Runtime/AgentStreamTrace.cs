@@ -1,11 +1,11 @@
-namespace InfraMapper.Services.Agent.AgentFramework;
+namespace InfraMapper.Services.Agent.Runtime;
 
-internal sealed class AgentActivityTraceScope : IDisposable
+internal sealed class AgentStreamTraceScope : IDisposable
 {
     private readonly Stack<List<AgentStreamEvent>> _stack;
     public List<AgentStreamEvent> Events { get; } = [];
 
-    public AgentActivityTraceScope(Stack<List<AgentStreamEvent>> stack)
+    public AgentStreamTraceScope(Stack<List<AgentStreamEvent>> stack)
     {
         _stack = stack;
         _stack.Push(Events);
@@ -13,25 +13,25 @@ internal sealed class AgentActivityTraceScope : IDisposable
 
     public void Dispose()
     {
-        if (_stack.Count > 0 && ReferenceEquals(_stack.Peek(), Events))
+        if (_stack.Count > 0)
             _stack.Pop();
     }
 }
 
-internal static class AgentActivityTrace
+internal static class AgentStreamTrace
 {
     private static readonly AsyncLocal<Stack<List<AgentStreamEvent>>?> Current = new();
 
-    public static AgentActivityTraceScope Push()
+    public static AgentStreamTraceScope Push()
     {
         Current.Value ??= new Stack<List<AgentStreamEvent>>();
-        return new AgentActivityTraceScope(Current.Value);
+        return new AgentStreamTraceScope(Current.Value);
     }
 
     public static void Record(AgentStreamEvent evt)
     {
         var stack = Current.Value;
-        if (stack is null || stack.Count == 0) return;
-        stack.Peek().Add(evt);
+        if (stack is { Count: > 0 })
+            stack.Peek().Add(evt);
     }
 }

@@ -14,10 +14,10 @@
     <PackageReference Include="Azure.ResourceManager.Resources" Version="1.11.2" />
     <PackageReference Include="Azure.ResourceManager.Storage" Version="1.6.2" />
     <PackageReference Include="DotNetEnv" Version="3.1.1" />
-    <PackageReference Include="Anthropic" Version="12.13.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
     <PackageReference Include="Microsoft.SemanticKernel" Version="1.45.0" />
     <PackageReference Include="Microsoft.SemanticKernel.Agents.Core" Version="1.45.0" />
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.AzureOpenAI" Version="1.45.0" />
   </ItemGroup>
 
 </Project>

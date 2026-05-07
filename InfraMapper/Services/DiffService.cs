@@ -56,6 +56,8 @@ public sealed class DiffService
         {
             if (IsScopedResourceGroup(live_node, scopedRgs))
                 continue;
+            if (!IsManagedByDesiredState(live_node, desired))
+                continue;
 
             var key = Key(live_node.Name, live_node.Type, live_node.ResourceGroup);
             if (!matchedLiveKeys.Contains(key))
@@ -152,6 +154,33 @@ public sealed class DiffService
     private static bool IsScopedResourceGroup(ResourceNode node, HashSet<string> scopedRgs) =>
         string.Equals(node.Type, "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase) &&
         scopedRgs.Contains(node.Name.ToLowerInvariant());
+
+    private static bool IsManagedByDesiredState(ResourceNode liveNode, DesiredStateSpec desired)
+    {
+        if (desired.Nodes.Count == 0)
+            return false;
+
+        // Exact desired-state diff is authoritative only for resources carrying the same
+        // management tags. This keeps platform/control-plane dependencies in the same RG
+        // (for example Microsoft Foundry resources that run the agent) out of app diffs.
+        var desiredTags = desired.Nodes
+            .SelectMany(n => n.Tags)
+            .GroupBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Select(kv => kv.Value).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1)
+            .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
+
+        if (desiredTags.Count == 0)
+            return false;
+
+        foreach (var (key, value) in desiredTags)
+        {
+            if (!liveNode.Tags.TryGetValue(key, out var liveValue) ||
+                !string.Equals(liveValue, value, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
+    }
 
     private static ResourceNode ToResourceNode(DesiredResourceNode desired) => new()
     {

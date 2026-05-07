@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using InfraMapper.Models.Agent;
-using InfraMapper.Services.Agent.AgentFramework;
+using InfraMapper.Services.Agent.Runtime;
 
 namespace InfraMapper.Services.Agent;
 
@@ -9,11 +9,15 @@ public sealed class AgentService
 {
     private readonly ConversationStore _store;
     private readonly PlanStore _planStore;
+    private readonly QuestionStore _questionStore;
+    private readonly SkAgentRunner _runner;
 
-    public AgentService(ConversationStore store, PlanStore planStore)
+    public AgentService(ConversationStore store, PlanStore planStore, QuestionStore questionStore, SkAgentRunner runner)
     {
         _store = store;
         _planStore = planStore;
+        _questionStore = questionStore;
+        _runner = runner;
     }
 
     public async Task<AgentChatResponse> ChatAsync(AgentChatRequest request, CancellationToken ct)
@@ -70,8 +74,8 @@ public sealed class AgentService
         string? streamError = null;
         try
         {
-            var agentStream = entry!.Agent.RunStreamingAsync(effectiveMessage, entry.Session, ct);
-            var translator = new SseEventTranslator(sessionId, _planStore, autoApprovePlan);
+            var agentStream = _runner.RunStreamingAsync(entry!.Agent, effectiveMessage, entry.Session, ct);
+            var translator = new SseEventTranslator(sessionId, _planStore, _questionStore, autoApprovePlan);
             events = translator.TranslateAsync(agentStream, ct);
         }
         catch (Exception ex) { streamError = ex.Message; }

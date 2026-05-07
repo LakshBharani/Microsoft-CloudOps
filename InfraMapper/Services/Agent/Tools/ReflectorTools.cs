@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using InfraMapper.Services.Agent.Memory;
+using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
@@ -11,6 +12,7 @@ public sealed class ReflectorTools
     public ReflectorTools(ILessonsStore lessonsStore) =>
         _lessonsStore = lessonsStore;
 
+    [KernelFunction("write_lesson")]
     [Description("Record a lesson from this deployment for use in future planning sessions. " +
                  "Call this after every deployment (success or failure) to build institutional memory.")]
     public string WriteLesson(

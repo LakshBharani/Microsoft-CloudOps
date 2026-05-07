@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using InfraMapper.Services.Agent.Memory;
+using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
@@ -24,6 +25,7 @@ public sealed class PlannerTools
         _currentIntent = intent;
     }
 
+    [KernelFunction("get_lessons")]
     [Description("Retrieve relevant lessons from past deployments for the given resource types. " +
                  "Call this BEFORE drafting to avoid repeating known mistakes.")]
     public string GetLessons(
@@ -36,6 +38,7 @@ public sealed class PlannerTools
         return JsonSerializer.Serialize(new { lessons });
     }
 
+    [KernelFunction("record_critique")]
     [Description("REQUIRED STEP 2 OF 3: Record your critique of the ARM template draft. " +
                  "Analyze naming conventions, required dependencies, region/SKU compatibility, " +
                  "security, and missing required properties. You MUST call this before create_plan.")]
@@ -48,6 +51,7 @@ public sealed class PlannerTools
                "then call create_plan with the improved version.";
     }
 
+    [KernelFunction("create_plan")]
     [Description("REQUIRED STEP 3 OF 3: Submit the final revised deployment plan after self-critique. " +
                  "Call this ONLY after record_critique. Returns plan JSON that must be passed back verbatim.")]
     public string CreatePlan(
