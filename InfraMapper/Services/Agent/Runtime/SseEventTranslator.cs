@@ -118,15 +118,6 @@ public sealed class SseEventTranslator
                     if (callId is not null && _pendingSubAgentCalls.TryGetValue(callId, out var pending))
                     {
                         _pendingSubAgentCalls.Remove(callId);
-                        yield return Evt("agent_result", new
-                        {
-                            agent         = pending.agentName,
-                            success       = !isError,
-                            iteration     = pending.iteration,
-                            input_tokens  = 0,
-                            output_tokens = 0,
-                            session_id    = _sessionId
-                        });
                     }
 
                     if (IsQuestionResult(resultStr))

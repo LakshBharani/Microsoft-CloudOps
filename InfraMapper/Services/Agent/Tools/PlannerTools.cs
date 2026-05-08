@@ -56,16 +56,38 @@ public sealed class PlannerTools
                  "Call this ONLY after record_critique. Returns plan JSON that must be passed back verbatim.")]
     public string CreatePlan(
         [Description("Short descriptive title for this deployment plan")] string title,
-        [Description("Complete list of Azure operations to perform")] PlanOperationDto[] operations,
+        [Description("Complete list of Azure operations to perform as a JSON array. Each item must have action, resource_type, resource_name, resource_group, and details.")] JsonElement operations,
         [Description("Risk level: Low, Medium, or High")] string riskLevel = "Medium",
         [Description("Optional human-readable cost estimate")] string? estimatedCostNote = null)
     {
-        var validationError = ValidateUserNamedResources(operations);
+        var parsedOperations = ParseOperations(operations);
+        if (parsedOperations is null)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                error = true,
+                error_type = "invalid_plan_operations",
+                message = "operations must be a JSON array of operation objects, not prose.",
+                expected_shape = new[]
+                {
+                    new
+                    {
+                        action = "Create",
+                        resource_type = "Microsoft.Storage/storageAccounts",
+                        resource_name = "examplestore001",
+                        resource_group = "rg-example",
+                        details = "StorageV2, Standard_LRS, eastus"
+                    }
+                }
+            }, OrchestratorTools.SnakeCaseOpts);
+        }
+
+        var validationError = ValidateUserNamedResources(parsedOperations);
         if (validationError is not null)
             return validationError;
 
         var planDataEl = JsonSerializer.SerializeToElement(
-            new { title, operations, risk_level = riskLevel, estimated_cost_note = estimatedCostNote },
+            new { title, operations = parsedOperations, risk_level = riskLevel, estimated_cost_note = estimatedCostNote },
             OrchestratorTools.SnakeCaseOpts);
 
         var planId = _planStore.CreatePlan(_sessionId, planDataEl);
@@ -75,10 +97,68 @@ public sealed class PlannerTools
             plan_id = planId.ToString(),
             status = "awaiting_user_approval",
             title,
-            operations,
+            operations = parsedOperations,
             risk_level = riskLevel,
             estimated_cost_note = estimatedCostNote,
         }, OrchestratorTools.SnakeCaseOpts);
+    }
+
+    private static PlanOperationDto[]? ParseOperations(JsonElement operations)
+    {
+        try
+        {
+            if (operations.ValueKind == JsonValueKind.String)
+            {
+                var json = operations.GetString();
+                if (string.IsNullOrWhiteSpace(json))
+                    return null;
+
+                using var doc = JsonDocument.Parse(json);
+                return ParseOperationsArray(doc.RootElement);
+            }
+
+            return ParseOperationsArray(operations);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static PlanOperationDto[]? ParseOperationsArray(JsonElement operations)
+    {
+        if (operations.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var result = new List<PlanOperationDto>();
+        foreach (var operation in operations.EnumerateArray())
+        {
+            if (operation.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var action = GetString(operation, "action") ?? "Create";
+            var resourceType = GetString(operation, "resource_type") ?? GetString(operation, "resourceType");
+            var resourceName = GetString(operation, "resource_name") ?? GetString(operation, "resourceName");
+            if (string.IsNullOrWhiteSpace(resourceType) || string.IsNullOrWhiteSpace(resourceName))
+                return null;
+
+            result.Add(new PlanOperationDto(
+                action,
+                resourceType,
+                resourceName,
+                GetString(operation, "resource_group") ?? GetString(operation, "resourceGroup"),
+                GetString(operation, "details")));
+        }
+
+        return result.ToArray();
+    }
+
+    private static string? GetString(JsonElement obj, string name)
+    {
+        if (!obj.TryGetProperty(name, out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            return null;
+
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
     }
 
     private string? ValidateUserNamedResources(PlanOperationDto[] operations)

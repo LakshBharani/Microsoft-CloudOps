@@ -65,11 +65,11 @@ export interface ClarifyingQuestion {
 }
 
 export interface PlanOperation {
-  action: "Create" | "Update" | "Delete" | "Deploy";
+  action: "Create" | "Update" | "Delete" | "Deploy" | string;
   resource_type: string;
   resource_name: string;
   resource_group?: string;
-  details?: string;
+  details?: string | Record<string, unknown>;
 }
 
 export interface Plan {

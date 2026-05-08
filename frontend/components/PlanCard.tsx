@@ -21,6 +21,15 @@ const ACTION_STYLES: Record<string, string> = {
   Deploy: "bg-blue-900 text-blue-300 border-blue-700",
 };
 
+function titleCaseAction(action: string) {
+  return action.charAt(0).toUpperCase() + action.slice(1).toLowerCase();
+}
+
+function formatDetails(details: PlanOperation["details"]) {
+  if (!details) return "";
+  return typeof details === "string" ? details : JSON.stringify(details);
+}
+
 interface Props {
   plan: Plan;
   sessionId: string;
@@ -114,8 +123,8 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
           {plan.operations.map((op: PlanOperation, i: number) => (
             <div key={i} className="flex flex-col gap-1.5 px-3 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
-                <span className={`flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${ACTION_STYLES[op.action] ?? "bg-slate-800 text-slate-300 border-slate-600"}`}>
-                  {op.action}
+                <span className={`flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${ACTION_STYLES[titleCaseAction(op.action)] ?? "bg-slate-800 text-slate-300 border-slate-600"}`}>
+                  {titleCaseAction(op.action)}
                 </span>
                 <span className="truncate text-xs font-medium text-slate-100" title={op.resource_name}>{op.resource_name}</span>
               </div>
@@ -124,7 +133,7 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
                 <div className="text-[10px] text-slate-400">Group: {op.resource_group}</div>
               )}
               {op.details && (
-                <div className="break-words text-[10px] leading-relaxed text-slate-400">{op.details}</div>
+                <div className="break-words text-[10px] leading-relaxed text-slate-400">{formatDetails(op.details)}</div>
               )}
             </div>
           ))}
