@@ -20,19 +20,22 @@ public sealed class AgentService
     private readonly SkAgentRunner _runner;
     private readonly InfraIntentCompiler _intentCompiler;
     private readonly IServiceProvider _services;
+    private readonly QuestionStore _questionStore;
 
     public AgentService(
         ConversationStore store,
         PlanStore planStore,
         SkAgentRunner runner,
         InfraIntentCompiler intentCompiler,
-        IServiceProvider services)
+        IServiceProvider services,
+        QuestionStore questionStore)
     {
         _store = store;
         _planStore = planStore;
         _runner = runner;
         _intentCompiler = intentCompiler;
         _services = services;
+        _questionStore = questionStore;
     }
 
     public async Task<AgentChatResponse> ChatAsync(AgentChatRequest request, CancellationToken ct)
@@ -80,10 +83,15 @@ public sealed class AgentService
             yield break;
         }
 
+        var pendingClarification = _store.ConsumePendingClarification(sessionId);
+        var effectiveMessage = string.IsNullOrWhiteSpace(pendingClarification)
+            ? request.Message
+            : $"{pendingClarification}\n\nContinue with the clarified infrastructure task.";
+
         var translator = new SseEventTranslator(sessionId, _planStore);
-        var stream = TryCompile(request.Message, request.SubscriptionId, out var compiled, out var compileError)
+        var stream = TryCompile(effectiveMessage, request.SubscriptionId, out var compiled, out var compileError)
             ? RunCompiledIntentAsync(sessionId, request.SubscriptionId, compiled!, ct)
-            : _runner.RunStreamingAsync(entry!.Agent, BuildAgentMessage(request.Message, request.SubscriptionId, compileError), entry.Session, ct);
+            : _runner.RunStreamingAsync(entry!.Agent, BuildAgentMessage(effectiveMessage, request.SubscriptionId, compileError), entry.Session, ct);
 
         await foreach (var evt in translator.TranslateAsync(stream, ct))
             yield return evt;
@@ -92,6 +100,11 @@ public sealed class AgentService
     public void ResumeAfterPlanApproval(string sessionId, Guid planId)
     {
         // Prototype mode auto-executes plans. Method remains so existing controller/frontend calls compile.
+    }
+
+    public void ResumeAfterQuestionAnswer(string sessionId, Guid questionId, string answer)
+    {
+        _store.SetPendingClarification(sessionId, _questionStore.FormatAnswer(questionId, answer));
     }
 
     private async IAsyncEnumerable<AgentStreamEvent> RunCompiledIntentAsync(

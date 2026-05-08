@@ -26,6 +26,7 @@ interface Props {
 const TOOL_LABELS: Record<string, string> = {
   list_resource_groups: "Listing resource groups",
   list_resources: "Listing resources",
+  ask_clarifying_question: "Asking clarification",
   get_resource: "Reading resource",
   find_resource: "Finding resource",
   get_deployment_status: "Checking deployment status",

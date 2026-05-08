@@ -17,6 +17,7 @@ public sealed class AzureCrudTools
     private readonly IArmGenericResourceService _genericResources;
     private readonly IArmDeploymentService _deployments;
     private readonly PlanStore _planStore;
+    private readonly QuestionStore _questionStore;
     private readonly string _sessionId;
     private readonly string _defaultSubscriptionId;
 
@@ -25,6 +26,7 @@ public sealed class AzureCrudTools
         IArmGenericResourceService genericResources,
         IArmDeploymentService deployments,
         PlanStore planStore,
+        QuestionStore questionStore,
         string sessionId,
         string defaultSubscriptionId)
     {
@@ -32,8 +34,56 @@ public sealed class AzureCrudTools
         _genericResources = genericResources;
         _deployments = deployments;
         _planStore = planStore;
+        _questionStore = questionStore;
         _sessionId = sessionId;
         _defaultSubscriptionId = defaultSubscriptionId;
+    }
+
+    [KernelFunction("ask_clarifying_question")]
+    [Description("Ask the user a targeted clarification question when required infrastructure details are missing or ambiguous.")]
+    public string AskClarifyingQuestion(
+        [Description("Short title for the question.")] string title,
+        [Description("Specific prompt explaining what value is needed and why.")] string prompt,
+        [Description("Concrete options as JSON array. Each item should include label, value, and optional description.")] JsonElement options,
+        [Description("Recommended option value if known.")] string? default_value = null,
+        [Description("Whether the user may type a custom answer.")] bool allow_custom = true)
+    {
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(prompt))
+            return Error("invalid_question", "title and prompt are required.");
+
+        var normalizedOptions = options.ValueKind == JsonValueKind.Array
+            ? JsonSerializer.Deserialize<object[]>(options.GetRawText()) ?? []
+            : Array.Empty<object>();
+
+        var questionData = JsonSerializer.SerializeToElement(new
+        {
+            title,
+            prompt,
+            options = normalizedOptions,
+            default_value,
+            allow_custom,
+            category = "general",
+            originating_agent = "infra_agent"
+        }, JsonOpts);
+        var questionId = _questionStore.CreateQuestion(_sessionId, questionData);
+
+        return AgentResultJson.Serialize(new
+        {
+            ok = true,
+            kind = AgentResultKinds.ClarificationRequired,
+            question = new
+            {
+                question_id = questionId,
+                title,
+                prompt,
+                options = normalizedOptions,
+                default_value,
+                allow_custom,
+                category = "general",
+                originating_agent = "infra_agent"
+            },
+            message = "Clarification required before continuing."
+        });
     }
 
     [KernelFunction("list_resource_groups")]

@@ -10,6 +10,7 @@ public sealed class ConversationStore
     public sealed record SessionEntry(ChatCompletionAgent Agent, SkAgentSession Session, DateTimeOffset LastAccessed);
 
     private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new();
+    private readonly ConcurrentDictionary<string, string> _pendingClarifications = new();
     private readonly SkAgentFactory _agentFactory;
     private readonly IServiceProvider _services;
 
@@ -47,6 +48,12 @@ public sealed class ConversationStore
                 _sessions.TryRemove(kv.Key, out _);
     }
 
+    public void SetPendingClarification(string sessionId, string answerContext) =>
+        _pendingClarifications.AddOrUpdate(sessionId, answerContext, (_, existing) => $"{existing}\n{answerContext}");
+
+    public string? ConsumePendingClarification(string sessionId) =>
+        _pendingClarifications.TryRemove(sessionId, out var answer) ? answer : null;
+
     private static string BuildSystemPrompt(string subscriptionId) =>
         $$"""
         You are InfraMapper, a single Azure infrastructure agent for a prototype demo.
@@ -74,6 +81,7 @@ public sealed class ConversationStore
         - Existing InfraIntentSpec is expected: schemaVersion, intent, scope, components, constraints.
         - Supported shortcut components: storageAccount, webApp.
         - Supported generic component: genericResource with type, apiVersion, name, location, properties, optional sku, kindValue, tags.
+        - If required details are missing, call ask_clarifying_question with concrete options.
 
         Safety:
         - Maximum two execution attempts for the same failed operation.

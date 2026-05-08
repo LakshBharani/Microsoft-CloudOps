@@ -49,6 +49,7 @@ builder.Services.AddControllers()
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddSingleton<PlanStore>();
+builder.Services.AddSingleton<QuestionStore>();
 builder.Services.AddSingleton<SkAgentRunner>();
 builder.Services.AddSingleton<SkAgentFactory>();
 builder.Services.AddSingleton<ConversationStore>();

@@ -48,6 +48,7 @@ public static class AgentResultKinds
 {
     public const string PlanCreated = "plan_created";
     public const string PlanRejected = "plan_rejected";
+    public const string ClarificationRequired = "clarification_required";
     public const string DeploymentSucceeded = "deployment_succeeded";
     public const string DeploymentFailed = "deployment_failed";
     public const string ToolError = "tool_error";
@@ -122,7 +123,11 @@ public static class AgentResultParser
                 message ??= GetString(dataEl, "message");
             }
 
-            if (!string.IsNullOrWhiteSpace(planId))
+            if (TryGetProperty(root, "question", out var questionEl) && questionEl.ValueKind == JsonValueKind.Object)
+                kind ??= AgentResultKinds.ClarificationRequired;
+            else if (TryGetProperty(root, "question_id", out _))
+                kind ??= AgentResultKinds.ClarificationRequired;
+            else if (!string.IsNullOrWhiteSpace(planId))
                 kind ??= AgentResultKinds.PlanCreated;
 
             if (TryGetProperty(root, "approved", out var approvedEl) && approvedEl.ValueKind is JsonValueKind.True or JsonValueKind.False)

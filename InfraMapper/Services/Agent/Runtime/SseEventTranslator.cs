@@ -65,6 +65,11 @@ public sealed class SseEventTranslator
                         foreach (var planEvt in BuildPlanEvents(tr.ResultJson))
                             yield return planEvt;
                     }
+                    else if (string.Equals(tr.ToolName, "ask_clarifying_question", StringComparison.OrdinalIgnoreCase) && tr.Success)
+                    {
+                        foreach (var questionEvt in BuildQuestionEvents(tr.ResultJson))
+                            yield return questionEvt;
+                    }
                     break;
 
                 case AgentStreamEvent.Activity a:
@@ -143,6 +148,62 @@ public sealed class SseEventTranslator
             return (parsed.ErrorType, parsed.Message);
 
         return (null, null);
+    }
+
+    private IEnumerable<string> BuildQuestionEvents(string resultJson)
+    {
+        JsonDocument? doc = null;
+        try { doc = JsonDocument.Parse(ExtractJsonObject(resultJson)); }
+        catch { yield break; }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            var questionRoot = root.TryGetProperty("question", out var questionEl) && questionEl.ValueKind == JsonValueKind.Object
+                ? questionEl
+                : root;
+
+            if (!questionRoot.TryGetProperty("question_id", out var questionIdEl))
+                yield break;
+
+            yield return Evt("question", new
+            {
+                question_id = questionIdEl.GetString(),
+                title = questionRoot.TryGetProperty("title", out var t) ? t.GetString() : "Clarification needed",
+                prompt = questionRoot.TryGetProperty("prompt", out var p) ? p.GetString() : "",
+                options = questionRoot.TryGetProperty("options", out var o)
+                    ? JsonSerializer.Deserialize<object[]>(o.GetRawText())
+                    : Array.Empty<object>(),
+                default_value = questionRoot.TryGetProperty("default_value", out var d) ? d.GetString() : null,
+                allow_custom = !questionRoot.TryGetProperty("allow_custom", out var ac) || ac.GetBoolean(),
+                category = questionRoot.TryGetProperty("category", out var cat) ? cat.GetString() : null,
+                confirmation_scope = (string?)null,
+                originating_agent = questionRoot.TryGetProperty("originating_agent", out var origin) ? origin.GetString() : null,
+                session_id = _sessionId
+            });
+        }
+    }
+
+    private static string ExtractJsonObject(string text)
+    {
+        var start = text.IndexOf('{');
+        if (start < 0) return text;
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (escaped) { escaped = false; continue; }
+            if (ch == '\\' && inString) { escaped = true; continue; }
+            if (ch == '"') { inString = !inString; continue; }
+            if (inString) continue;
+            if (ch == '{') depth++;
+            else if (ch == '}' && --depth == 0) return text[start..(i + 1)];
+        }
+
+        return text[start..];
     }
 
     private static string Preview(string value)
