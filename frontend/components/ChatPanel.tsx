@@ -48,7 +48,7 @@ const AGENT_LABELS: Record<string, string> = {
   reflect_on_deployment: "Reflector",
 };
 
-const ORCHESTRATOR_MODEL = "gpt-4.1-mini";
+const ORCHESTRATOR_MODEL = "claude-haiku-4-5";
 
 function formatModelName(model?: string) {
   return model?.replace(/^claude-/, "").replace(/-/g, " ");
@@ -209,6 +209,22 @@ function AgentMessage({
   const richOpen = msg.richCollapsed !== true;
   const operationResult = msg.content ? isOperationResult(msg.content) : false;
   const workedDuration = getWorkedDuration(msg);
+  const hasPlans = (msg.plans?.length ?? 0) > 0 || !!msg.plan;
+  const hasQuestions = (msg.questions?.length ?? 0) > 0 || !!msg.question;
+  const activities = msg.activities && msg.activities.length > 0
+    ? msg.activities
+    : msg.isStreaming
+      ? [{
+          id: "stream-starting",
+          kind: "agent" as const,
+          agent: "orchestrator",
+          model: ORCHESTRATOR_MODEL,
+          status: "running" as const,
+          summary: "Waiting for agent activity",
+          message: "Starting work...",
+          startedAt: Date.now(),
+        }]
+      : undefined;
 
   return (
     <div className="w-full space-y-2 rounded-lg border border-slate-800 bg-[#1e293b] px-3 py-2 text-xs leading-relaxed text-slate-200">
@@ -221,7 +237,7 @@ function AgentMessage({
         )}
       </div>
       <div className="break-words">
-        <ActivityTimeline activities={msg.activities} defaultOpen={richOpen} />
+        <ActivityTimeline activities={activities} defaultOpen={richOpen} />
         {msg.toolCalls && msg.toolCalls.length > 0 && (
           <ToolCallList toolCalls={msg.toolCalls} />
         )}
@@ -243,7 +259,13 @@ function AgentMessage({
             onAnswered={onQuestionAnswered}
           />
         ))}
-        {msg.content && !operationResult && !msg.plan && !(msg.plans && msg.plans.length > 0) && !(msg.questions && msg.questions.length > 0) && (
+        {msg.content && operationResult && !hasPlans && !hasQuestions && (
+          <div className="flex items-start gap-1.5 rounded border border-green-900/60 bg-green-950/30 px-2 py-1.5 text-[11px] text-green-100">
+            <CheckCircle2 size={12} className="mt-0.5 shrink-0 text-green-400" />
+            <span>{cleanAgentText(msg.content)}</span>
+          </div>
+        )}
+        {msg.content && !operationResult && !hasPlans && !hasQuestions && (
           <ReactMarkdown
             components={{
               p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
@@ -369,6 +391,17 @@ export default function ChatPanel({
     });
   }
 
+  function normalizeQuestionOptions(options: ClarifyingQuestion["options"]) {
+    return options.map((option) => {
+      const legacy = option as typeof option & { Label?: string; Value?: string; Description?: string };
+      return {
+        label: option.label ?? legacy.Label ?? option.value ?? legacy.Value ?? "Option",
+        value: option.value ?? legacy.Value ?? option.label ?? legacy.Label ?? "option",
+        description: option.description ?? legacy.Description,
+      };
+    });
+  }
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -457,7 +490,7 @@ export default function ChatPanel({
             questionId: evt.data.question_id,
             title: evt.data.title,
             prompt: evt.data.prompt,
-            options: evt.data.options,
+            options: normalizeQuestionOptions(evt.data.options),
             defaultValue: evt.data.default_value ?? undefined,
             allowCustom: evt.data.allow_custom,
             category: evt.data.category ?? undefined,
@@ -574,7 +607,7 @@ export default function ChatPanel({
             questionId: evt.data.question_id,
             title: evt.data.title,
             prompt: evt.data.prompt,
-            options: evt.data.options,
+            options: normalizeQuestionOptions(evt.data.options),
             defaultValue: evt.data.default_value ?? undefined,
             allowCustom: evt.data.allow_custom,
             category: evt.data.category ?? undefined,
@@ -681,7 +714,7 @@ export default function ChatPanel({
             questionId: evt.data.question_id,
             title: evt.data.title,
             prompt: evt.data.prompt,
-            options: evt.data.options,
+            options: normalizeQuestionOptions(evt.data.options),
             defaultValue: evt.data.default_value ?? undefined,
             allowCustom: evt.data.allow_custom,
             category: evt.data.category ?? undefined,

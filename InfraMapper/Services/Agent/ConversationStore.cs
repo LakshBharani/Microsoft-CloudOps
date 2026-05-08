@@ -105,7 +105,10 @@ public sealed class ConversationStore
             critic,
             orchestratorQuestioner,
             executor,
-            reflector);
+            reflector,
+            _planStore,
+            _questionStore,
+            sessionId);
 
         var agent = _agentFactory.Create(
             "orchestrator",
@@ -137,24 +140,30 @@ public sealed class ConversationStore
     public string? ConsumePendingApproval(string sessionId)
     {
         if (!_sessions.TryGetValue(sessionId, out var entry)) return null;
-        if (!entry.Session.TryGetValue<string>("pending_approval", out var msg)) return null;
-        entry.Session.TryRemoveValue("pending_approval");
-        return msg;
+        lock (entry.Session)
+        {
+            if (!entry.Session.TryGetValue<string>("pending_approval", out var msg)) return null;
+            entry.Session.TryRemoveValue("pending_approval");
+            return msg;
+        }
     }
 
     public void SetPendingQuestionAnswer(string sessionId, Guid questionId, string answer)
     {
         if (!_sessions.TryGetValue(sessionId, out var entry)) return;
-        entry.Session.TryGetValue<string>("pending_question_answer", out var existing);
-        var answerContext = _questionStore.GetAnswerContext(questionId);
-        var next = answerContext is null
-            ? $"The user answered clarification question {questionId}: {answer}."
-            : BuildClarificationResumeMessage(answerContext);
-        entry.Session.SetValue(
-            "pending_question_answer",
-            string.IsNullOrWhiteSpace(existing)
-                ? $"{next} Continue planning with this answer. If the answer changes plan constraints, call plan_deployment again and critique the revised plan before presenting it."
-                : $"{existing}\n{next}");
+        lock (entry.Session)
+        {
+            entry.Session.TryGetValue<string>("pending_question_answer", out var existing);
+            var answerContext = _questionStore.GetAnswerContext(questionId);
+            var next = answerContext is null
+                ? $"The user answered clarification question {questionId}: {answer}."
+                : BuildClarificationResumeMessage(answerContext);
+            entry.Session.SetValue(
+                "pending_question_answer",
+                string.IsNullOrWhiteSpace(existing)
+                    ? $"{next} Continue planning with this answer. If the answer changes plan constraints, call plan_deployment again and critique the revised plan before presenting it."
+                    : $"{existing}\n{next}");
+        }
     }
 
     private static string BuildClarificationResumeMessage(ClarifyingQuestionAnswerContext answer)
@@ -189,9 +198,12 @@ public sealed class ConversationStore
     public string? ConsumePendingQuestionAnswer(string sessionId)
     {
         if (!_sessions.TryGetValue(sessionId, out var entry)) return null;
-        if (!entry.Session.TryGetValue<string>("pending_question_answer", out var msg)) return null;
-        entry.Session.TryRemoveValue("pending_question_answer");
-        return msg;
+        lock (entry.Session)
+        {
+            if (!entry.Session.TryGetValue<string>("pending_question_answer", out var msg)) return null;
+            entry.Session.TryRemoveValue("pending_question_answer");
+            return msg;
+        }
     }
 
     public void Remove(string sessionId) => _sessions.TryRemove(sessionId, out _);

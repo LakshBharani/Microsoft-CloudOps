@@ -28,9 +28,12 @@ public sealed class CriticAgent
             plugins.ToArray());
     }
 
-    public static string BuildUserMessage(string planId)
+    public static string BuildUserMessage(string planId, string? clarificationAnswers = null)
     {
-        return $"Critique plan with id: {planId}";
+        var msg = $"Critique plan with id: {planId}";
+        if (!string.IsNullOrWhiteSpace(clarificationAnswers))
+            msg += clarificationAnswers;
+        return msg;
     }
 
     private const string SystemPrompt = """

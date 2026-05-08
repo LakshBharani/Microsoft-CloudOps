@@ -60,4 +60,16 @@ public sealed class PlanStore
     public JsonElement? GetPlanData(Guid planId) =>
         _plans.TryGetValue(planId, out var r) && r.ExpiresAt > DateTimeOffset.UtcNow
             ? r.PlanData : null;
+
+    public Guid? GetLatestApprovedForSession(string sessionId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return _plans
+            .Where(kv => kv.Value.SessionId == sessionId
+                         && kv.Value.Status == PlanStatus.Approved
+                         && kv.Value.ExpiresAt > now)
+            .OrderByDescending(kv => kv.Value.ExpiresAt)
+            .Select(kv => (Guid?)kv.Key)
+            .FirstOrDefault();
+    }
 }

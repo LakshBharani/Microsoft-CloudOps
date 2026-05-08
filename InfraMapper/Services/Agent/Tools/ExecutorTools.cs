@@ -9,8 +9,6 @@ namespace InfraMapper.Services.Agent.Tools;
 
 public sealed class ExecutorTools
 {
-    private static readonly AsyncLocal<string?> CurrentPlanId = new();
-
     private readonly IArmDeploymentService _deploymentService;
     private readonly IApprovalService _approvalService;
     private readonly IResourceMutationApprovalService _mutationApprovals;
@@ -37,18 +35,11 @@ public sealed class ExecutorTools
         _subscriptionId = subscriptionId;
     }
 
-    public static IDisposable UsePlan(string planId)
-    {
-        var prior = CurrentPlanId.Value;
-        CurrentPlanId.Value = planId;
-        return new PlanScope(prior);
-    }
-
     [KernelFunction("deploy_arm_template")]
     [Description("Deploy an ARM template to Azure. Requires an approved plan_id. " +
                  "Returns success:true on completion, or needs_replan:true if the template is invalid.")]
     public async Task<string> DeployArmTemplateAsync(
-        [Description("Approved plan_id from plan_deployment. If omitted, backend uses the current approved execution plan.")] string? plan_id = null,
+        [Description("Approved plan_id from plan_deployment. Required.")] string plan_id,
         [Description("Azure subscription ID. Ignored by backend; session subscription is used.")] string subscription_id = "",
         [Description("Deployment name")] string deployment_name = "",
         [Description("Full ARM template as a JSON string")] string template_json = "",
@@ -58,7 +49,6 @@ public sealed class ExecutorTools
         [Description("Deployment mode: Incremental or Complete")] string mode = "Incremental",
         CancellationToken cancellationToken = default)
     {
-        plan_id = ResolvePlanId(plan_id);
         if (!ValidatePlanApproved(plan_id, out var planError))
             return planError!;
 
@@ -123,11 +113,11 @@ public sealed class ExecutorTools
     }
 
     [KernelFunction("apply_resource_mutation")]
-    [Description("Create, update, or delete a single Azure resource. Requires an approved plan_id.")]
+    [Description("Create, update, or remove a single Azure resource. Requires an approved plan_id.")]
     public async Task<string> ApplyResourceMutationAsync(
-        [Description("Approved plan_id from plan_deployment. If omitted, backend uses the current approved execution plan.")] string? plan_id = null,
+        [Description("Approved plan_id from plan_deployment. Required.")] string plan_id,
         [Description("Full ARM resource ID")] string resource_id = "",
-        [Description("Operation: CreateOrUpdate or Delete")] string operation = "",
+        [Description("Operation enum value: CreateOrUpdate or Delete")] string operation = "",
         [Description("Resource location; required for CreateOrUpdate")] string? location = null,
         [Description("Resource properties as JSON object string")] string? properties_json = null,
         [Description("Tags to apply to the resource")] Dictionary<string, string>? tags = null,
@@ -135,7 +125,6 @@ public sealed class ExecutorTools
         [Description("Resource kind")] string? kind = null,
         CancellationToken cancellationToken = default)
     {
-        plan_id = ResolvePlanId(plan_id);
         if (!ValidatePlanApproved(plan_id, out var planError))
             return planError!;
 
@@ -143,6 +132,14 @@ public sealed class ExecutorTools
 
         if (!Enum.TryParse<ResourceMutationOperation>(operation, out var opEnum))
             return JsonSerializer.Serialize(new { error = true, message = $"Invalid operation '{operation}'." });
+
+        if (opEnum == ResourceMutationOperation.CreateOrUpdate && string.IsNullOrWhiteSpace(location))
+            return JsonSerializer.Serialize(new
+            {
+                error = true,
+                error_type = "validation",
+                message = "location is required for CreateOrUpdate."
+            });
 
         var manifest = new ResourceMutationManifestRequest
         {
@@ -211,9 +208,8 @@ public sealed class ExecutorTools
     [KernelFunction("get_plan_details")]
     [Description("Retrieve the full details of a plan by its plan_id, including all operations and metadata.")]
     public string GetPlanDetails(
-        [Description("The plan_id to retrieve. If omitted, backend uses the current approved execution plan.")] string? plan_id = null)
+        [Description("The plan_id to retrieve. Required.")] string plan_id)
     {
-        plan_id = ResolvePlanId(plan_id);
         if (!Guid.TryParse(plan_id, out var guid))
             return JsonSerializer.Serialize(new { error = true, message = "Invalid plan_id format." });
 
@@ -252,9 +248,6 @@ public sealed class ExecutorTools
         }
     }
 
-    private static string? ResolvePlanId(string? planId) =>
-        string.IsNullOrWhiteSpace(planId) ? CurrentPlanId.Value : planId;
-
     private bool ValidatePlanApproved(string? planIdStr, out string? error)
     {
         error = null;
@@ -263,7 +256,7 @@ public sealed class ExecutorTools
             error = JsonSerializer.Serialize(new
             {
                 error = true, error_type = "missing_plan",
-                message = "You must use an approved plan_id from plan_deployment. Do not retry until approved."
+                message = "Use an approved plan_id from plan_deployment before applying changes."
             });
             return false;
         }
@@ -283,21 +276,6 @@ public sealed class ExecutorTools
         }
 
         return true;
-    }
-
-    private sealed class PlanScope : IDisposable
-    {
-        private readonly string? _prior;
-
-        public PlanScope(string? prior)
-        {
-            _prior = prior;
-        }
-
-        public void Dispose()
-        {
-            CurrentPlanId.Value = _prior;
-        }
     }
 
     private static string ClassifyError(int? httpStatus) => httpStatus switch

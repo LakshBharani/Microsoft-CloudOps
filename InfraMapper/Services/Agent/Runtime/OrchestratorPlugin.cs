@@ -16,6 +16,9 @@ public sealed class OrchestratorPlugin
     private readonly ChatCompletionAgent _questioner;
     private readonly ChatCompletionAgent _executor;
     private readonly ChatCompletionAgent _reflector;
+    private readonly PlanStore _planStore;
+    private readonly QuestionStore _questionStore;
+    private readonly string _sessionId;
 
     public OrchestratorPlugin(
         SkAgentRunner runner,
@@ -25,7 +28,10 @@ public sealed class OrchestratorPlugin
         ChatCompletionAgent critic,
         ChatCompletionAgent questioner,
         ChatCompletionAgent executor,
-        ChatCompletionAgent reflector)
+        ChatCompletionAgent reflector,
+        PlanStore planStore,
+        QuestionStore questionStore,
+        string sessionId)
     {
         _runner = runner;
         _investigator = investigator;
@@ -35,7 +41,13 @@ public sealed class OrchestratorPlugin
         _questioner = questioner;
         _executor = executor;
         _reflector = reflector;
+        _planStore = planStore;
+        _questionStore = questionStore;
+        _sessionId = sessionId;
     }
+
+    private string? GetAnswers() =>
+        ClarificationAnswerFormatter.Format(_questionStore.GetAnsweredForSession(_sessionId));
 
     [KernelFunction("investigate_infrastructure")]
     [Description("Investigate Azure infrastructure for a focus area and return a focused summary of relevant resources and dependencies. Call before planning when current state matters.")]
@@ -53,7 +65,7 @@ public sealed class OrchestratorPlugin
         CancellationToken cancellationToken = default)
     {
         _plannerTools.BeginPlan(intent);
-        return _runner.RunAsync(_planner, PlannerAgent.BuildUserMessage(intent, investigator_summary), cancellationToken);
+        return _runner.RunAsync(_planner, PlannerAgent.BuildUserMessage(intent, investigator_summary, GetAnswers()), cancellationToken);
     }
 
     [KernelFunction("critique_plan")]
@@ -61,7 +73,7 @@ public sealed class OrchestratorPlugin
     public Task<string> CritiquePlan(
         [Description("The plan_id to critique")] string plan_id,
         CancellationToken cancellationToken = default) =>
-        _runner.RunAsync(_critic, CriticAgent.BuildUserMessage(plan_id), cancellationToken);
+        _runner.RunAsync(_critic, CriticAgent.BuildUserMessage(plan_id, GetAnswers()), cancellationToken);
 
     [KernelFunction("ask_clarifying_question")]
     [Description("Ask the user a targeted clarification question when planning is blocked by ambiguity or critic feedback requires a human choice.")]
@@ -80,11 +92,27 @@ public sealed class OrchestratorPlugin
     [KernelFunction("execute_plan")]
     [Description("Apply an approved deployment plan to Azure. Only call after the user has approved the plan.")]
     public async Task<string> ExecutePlan(
-        [Description("The approved plan_id to execute")] string plan_id,
+        [Description("The approved plan_id to execute. Optional — if omitted, the latest user-approved plan in this session is used.")] string? plan_id = null,
         CancellationToken cancellationToken = default)
     {
-        using var scope = ExecutorTools.UsePlan(plan_id);
-        return await _runner.RunAsync(_executor, ExecutorAgent.BuildUserMessage(plan_id), cancellationToken);
+        var resolved = ResolvePlanId(plan_id);
+        if (resolved is null)
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                error = true,
+                error_type = "missing_plan",
+                message = "No approved plan found for this session. Ask the user to approve a plan first."
+            });
+
+        return await _runner.RunAsync(_executor, ExecutorAgent.BuildUserMessage(resolved, GetAnswers()), cancellationToken);
+    }
+
+    private string? ResolvePlanId(string? planId)
+    {
+        if (!string.IsNullOrWhiteSpace(planId) && Guid.TryParse(planId, out _))
+            return planId;
+        var latest = _planStore.GetLatestApprovedForSession(_sessionId);
+        return latest?.ToString();
     }
 
     [KernelFunction("reflect_on_deployment")]

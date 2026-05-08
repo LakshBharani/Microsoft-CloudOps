@@ -33,11 +33,13 @@ public sealed class PlannerAgent
         return (agent, tools);
     }
 
-    public static string BuildUserMessage(string intent, string? investigatorSummary = null)
+    public static string BuildUserMessage(string intent, string? investigatorSummary = null, string? clarificationAnswers = null)
     {
         var msg = $"Plan deployment: {intent}";
         if (!string.IsNullOrWhiteSpace(investigatorSummary))
             msg += $"\n\nInvestigator summary:\n{investigatorSummary}";
+        if (!string.IsNullOrWhiteSpace(clarificationAnswers))
+            msg += clarificationAnswers;
         return msg;
     }
 

@@ -41,43 +41,6 @@ builder.Services.AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 
-builder.Services.AddSingleton(sp =>
-{
-    var configuration = sp.GetRequiredService<IConfiguration>();
-    var endpoint = configuration["AzureAI:Endpoint"]
-        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
-        ?? throw new InvalidOperationException(
-            "Azure OpenAI endpoint not configured. Set AzureAI:Endpoint or AZURE_OPENAI_ENDPOINT to the resource endpoint, e.g. https://<resource>.openai.azure.com/ or https://<resource>.cognitiveservices.azure.com/.");
-    var deploymentName = configuration["AzureAI:DeploymentName"]
-        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT")
-        ?? "gpt-4.1-mini";
-    var modelId = configuration["AzureAI:ModelId"]
-        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID")
-        ?? deploymentName;
-    var apiKey = configuration["AzureAI:ApiKey"]
-        ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
-
-    var kernelBuilder = Kernel.CreateBuilder();
-    if (!string.IsNullOrWhiteSpace(apiKey))
-    {
-        kernelBuilder.AddAzureOpenAIChatCompletion(
-            deploymentName: deploymentName,
-            endpoint: endpoint,
-            apiKey: apiKey,
-            modelId: modelId);
-    }
-    else
-    {
-        kernelBuilder.AddAzureOpenAIChatCompletion(
-            deploymentName: deploymentName,
-            endpoint: endpoint,
-            credentials: sp.GetRequiredService<TokenCredential>(),
-            modelId: modelId);
-    }
-
-    return kernelBuilder.Build();
-});
-
 builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<QuestionStore>();
 builder.Services.AddSingleton<ILessonsStore, JsonFileLessonsStore>();

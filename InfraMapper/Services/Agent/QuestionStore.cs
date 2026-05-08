@@ -66,6 +66,18 @@ public sealed class QuestionStore
             ? r.AnswerContext
             : null;
 
+    public IReadOnlyList<ClarifyingQuestionAnswerContext> GetAnsweredForSession(string sessionId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return _questions
+            .Where(kv => kv.Value.SessionId == sessionId
+                         && kv.Value.AnswerContext is not null
+                         && kv.Value.ExpiresAt > now)
+            .Select(kv => kv.Value.AnswerContext!)
+            .OrderBy(c => c.AnsweredAt)
+            .ToList();
+    }
+
     private static ClarifyingQuestionAnswerContext BuildAnswerContext(Guid questionId, QuestionRecord record, string answer)
     {
         var root = record.QuestionData;

@@ -3,13 +3,11 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Agents;
-using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
 
 namespace InfraMapper.Services.Agent.Runtime;
 
 public sealed class SkAgentRunner
 {
-    private const int DefaultMaxTokens = 1600;
     private const int DefaultTimeoutSeconds = 90;
 
     public async IAsyncEnumerable<AgentStreamEvent> RunStreamingAsync(
@@ -21,7 +19,7 @@ public sealed class SkAgentRunner
         var channel = Channel.CreateUnbounded<AgentStreamEvent>(new UnboundedChannelOptions
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = true
         });
         var kernel = agent.Kernel.Clone();
         var filter = new RecordingAutoFunctionInvocationFilter(evt => channel.Writer.TryWrite(evt));
@@ -52,7 +50,7 @@ public sealed class SkAgentRunner
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                channel.Writer.TryWrite(new AgentStreamEvent.Error($"Azure OpenAI/Semantic Kernel agent call timed out after {GetTimeout().TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
+                channel.Writer.TryWrite(new AgentStreamEvent.Error($"Foundry/Semantic Kernel agent call timed out after {GetTimeout().TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
             }
             catch (Exception ex)
             {
@@ -62,12 +60,18 @@ public sealed class SkAgentRunner
             {
                 channel.Writer.TryComplete();
             }
-        }, CancellationToken.None);
+        }, ct);
 
-        await foreach (var evt in channel.Reader.ReadAllAsync(ct))
-            yield return evt;
-
-        await runTask;
+        try
+        {
+            await foreach (var evt in channel.Reader.ReadAllAsync(ct))
+                yield return evt;
+        }
+        finally
+        {
+            try { await runTask; }
+            catch { /* surfaced via channel events */ }
+        }
     }
 
     public async Task<string> RunAsync(
@@ -90,14 +94,8 @@ public sealed class SkAgentRunner
 
     internal static KernelArguments BuildArguments()
     {
-        var maxTokens = int.TryParse(Environment.GetEnvironmentVariable("AZURE_AI_MAX_TOKENS"), out var value) && value > 0
-            ? value
-            : DefaultMaxTokens;
-
-        var settings = new AzureOpenAIPromptExecutionSettings
+        var settings = new PromptExecutionSettings
         {
-            Temperature = 0,
-            MaxTokens = maxTokens,
             FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(
                 autoInvoke: true,
                 options: new FunctionChoiceBehaviorOptions
@@ -124,7 +122,7 @@ public sealed class SkAgentRunner
         var message = ex.Message;
         return message.Contains("429", StringComparison.OrdinalIgnoreCase) ||
                message.Contains("too_many_requests", StringComparison.OrdinalIgnoreCase)
-            ? "Azure OpenAI rate limit hit (HTTP 429). The gpt-4.1-mini deployment is capped at low RPM/TPM; wait a minute or raise deployment quota."
+            ? "Foundry model rate limit hit (HTTP 429). Wait a minute or raise deployment quota."
             : message;
     }
 

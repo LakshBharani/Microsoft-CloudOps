@@ -348,18 +348,15 @@ public sealed class SseEventTranslator
 
     private IEnumerable<string> BuildPlainTextFallbackQuestion(string prompt)
     {
-        var options = new[]
-        {
-            new QuestionOptionDto("Confirm", "confirm", "The listed details are correct; continue planning."),
-            new QuestionOptionDto("Needs correction", "needs_correction", "I will provide corrections before planning continues.")
-        };
+        var options = ExtractInlineChoices(prompt, out var cleanPrompt);
+        var defaultValue = options.Length > 0 ? options[0].value : "confirm";
 
         var questionData = JsonSerializer.SerializeToElement(new
         {
             title = "Confirm infrastructure details",
-            prompt,
+            prompt = cleanPrompt,
             options,
-            default_value = "confirm",
+            default_value = defaultValue,
             allow_custom = true,
             category = "general",
             confirmation_scope = (string?)null,
@@ -373,15 +370,81 @@ public sealed class SseEventTranslator
         {
             question_id = questionId,
             title = "Confirm infrastructure details",
-            prompt,
+            prompt = cleanPrompt,
             options,
-            default_value = "confirm",
+            default_value = defaultValue,
             allow_custom = true,
             category = "general",
             confirmation_scope = (string?)null,
             originating_agent = "orchestrator",
             session_id = _sessionId
         });
+    }
+
+    private sealed record FallbackQuestionOption(string label, string value, string description);
+
+    private static FallbackQuestionOption[] ExtractInlineChoices(string prompt, out string cleanPrompt)
+    {
+        const string defaultConfirmDescription = "The listed details are correct; continue planning.";
+        const string defaultCorrectionDescription = "I will provide corrections before planning continues.";
+
+        cleanPrompt = prompt.Trim();
+        var markerIndex = prompt.IndexOf("please choose:", StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            return
+            [
+                new("Confirm", "confirm", defaultConfirmDescription),
+                new("Needs correction", "needs_correction", defaultCorrectionDescription)
+            ];
+        }
+
+        var choicesText = prompt[(markerIndex + "please choose:".Length)..];
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            choicesText,
+            @"-\s*(?<label>.+?)(?=\s+-\s+|$)",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+
+        var choices = matches
+            .Select(m => m.Groups["label"].Value.Trim().TrimEnd('.', ';'))
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Take(4)
+            .Select(label => new FallbackQuestionOption(label, ChoiceValue(label), ChoiceDescription(label)))
+            .ToArray();
+
+        if (choices.Length == 0)
+        {
+            return
+            [
+                new("Confirm", "confirm", defaultConfirmDescription),
+                new("Needs correction", "needs_correction", defaultCorrectionDescription)
+            ];
+        }
+
+        cleanPrompt = prompt[..markerIndex].Trim();
+        return choices;
+    }
+
+    private static string ChoiceValue(string label)
+    {
+        var lower = label.ToLowerInvariant();
+        if (lower.StartsWith("yes") || lower.Contains("confirm") || lower.Contains("create"))
+            return "confirm";
+        if (lower.StartsWith("no") || lower.Contains("do not") || lower.Contains("don't"))
+            return "needs_correction";
+
+        var slug = System.Text.RegularExpressions.Regex.Replace(lower, @"[^a-z0-9]+", "_").Trim('_');
+        return string.IsNullOrWhiteSpace(slug) ? "option" : slug;
+    }
+
+    private static string ChoiceDescription(string label)
+    {
+        var lower = label.ToLowerInvariant();
+        if (lower.StartsWith("yes") || lower.Contains("confirm") || lower.Contains("create"))
+            return "Continue with this choice.";
+        if (lower.StartsWith("no") || lower.Contains("do not") || lower.Contains("don't"))
+            return "Pause so I can provide corrections.";
+        return "Use this option.";
     }
 
     private static bool LooksLikePlainTextQuestion(string text)

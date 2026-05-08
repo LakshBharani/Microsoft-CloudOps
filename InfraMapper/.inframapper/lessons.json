@@ -248,5 +248,91 @@
     ],
     "whatFailed": null,
     "recommendation": "When updating SKUs and tags on existing resources and creating new web apps, ensure that the resource group is properly tagged and that SKU changes are compatible with the existing resource configurations to avoid downtime. Also, verify that the Linux web app settings align with the app service plan\u0027s capabilities."
+  },
+  {
+    "id": "52cc6f88-8a20-43fe-a86c-efdbe2a007ff",
+    "timestamp": "2026-05-07T04:27:15.431985+00:00",
+    "intentSummary": "Deploy Linux Web App \u0027app-im-demo\u0027 with associated resource group, storage account, and app service plan updates in \u0027rg-im-demo\u0027.",
+    "appliesTo": [
+      "Microsoft.Web/sites",
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms"
+    ],
+    "whatFailed": null,
+    "recommendation": "When updating SKUs and tags on storage accounts and app service plans, ensure compatibility with the Linux Web App requirements and validate that security settings are enforced to maintain compliance. Tag resource groups consistently to support environment and ownership tracking."
+  },
+  {
+    "id": "57f7a2c1-780c-4892-85f7-6e637656828a",
+    "timestamp": "2026-05-07T04:29:47.733344+00:00",
+    "intentSummary": "Update resource group tags, storage account SKU and tags, app service plan SKU, kind, and tags; create a new Linux web app linked to the updated app service plan in resource group \u0027rg-im-demo\u0027",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "When updating SKUs and tags for storage accounts and app service plans, ensure compatibility of SKU changes with existing resources. Creating a Linux web app linked to an updated app service plan should be done after confirming the app service plan supports Linux workloads."
+  },
+  {
+    "id": "a385c684-5643-4206-9953-e8b6069eb5ac",
+    "timestamp": "2026-05-07T04:55:20.697991+00:00",
+    "intentSummary": "Delete empty resource group rg-ai-eastus2 in East US 2 region",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups"
+    ],
+    "whatFailed": null,
+    "recommendation": "Ensure the resource group is empty before attempting deletion to avoid errors. Deleting empty resource groups is straightforward and succeeds without issues."
+  },
+  {
+    "id": "03872b8e-5169-4621-9049-9147d018f8d5",
+    "timestamp": "2026-05-07T22:38:04.431529+00:00",
+    "intentSummary": "Deploy resource group, storage account, App Service plan, and web app for a student demo in East US.",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "Ensure storage account names are lowercase alphanumeric and within length limits; enable HTTPS-only on web apps for security; verify SKU availability in the target region before deployment."
+  },
+  {
+    "id": "2b6f05f7-41c0-435b-b95b-77c392bce763",
+    "timestamp": "2026-05-07T23:03:16.647479+00:00",
+    "intentSummary": "Deploy resource group, storage account, app service plan, and web app for student demo in eastus",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "Ensure storage account names are lowercase alphanumeric and within length limits; enable HTTPS only on web apps for security; verify SKU availability in the target region before deployment."
+  },
+  {
+    "id": "8749d209-53c9-45c3-9fc6-e0ad3e81f9a5",
+    "timestamp": "2026-05-07T23:09:37.145112+00:00",
+    "intentSummary": "Deploy resource group, storage account, App Service Plan, and Web App for demo workloads in eastus",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts",
+      "Microsoft.Web/serverfarms",
+      "Microsoft.Web/sites"
+    ],
+    "whatFailed": null,
+    "recommendation": "Ensure resource names follow Azure naming conventions: storage account names must be lowercase alphanumeric and between 3-24 characters; App Service Plan and Web App names should be unique within the region. Use secure and standard configurations as done here for demo workloads to balance security and cost."
+  },
+  {
+    "id": "5f8de0e4-b5ca-4814-8b17-057d0069c10c",
+    "timestamp": "2026-05-08T01:06:01.056811+00:00",
+    "intentSummary": "Deploy resource group \u0027rg-student-storage-demo\u0027 and storage account \u0027ststudentstore01\u0027 in East US",
+    "appliesTo": [
+      "Microsoft.Resources/resourceGroups",
+      "Microsoft.Storage/storageAccounts"
+    ],
+    "whatFailed": null,
+    "recommendation": "Ensure storage account names are lowercase alphanumeric and between 3 and 24 characters; avoid special characters and uppercase letters to prevent deployment errors."
   }
 ]
