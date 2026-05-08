@@ -55,7 +55,7 @@ public sealed class OrchestratorPlugin
         [Description("The infrastructure focus area to investigate")] string focus,
         [Description("Optional subscription ID override")] string? subscription_id = null,
         CancellationToken cancellationToken = default) =>
-        _runner.RunAsync(_investigator, InvestigatorAgent.BuildUserMessage(focus, subscription_id), cancellationToken);
+        RunAndSurfaceQuestion(_investigator, InvestigatorAgent.BuildUserMessage(focus, subscription_id), cancellationToken);
 
     [KernelFunction("plan_deployment")]
     [Description("Generate a complete Azure deployment/change plan for the user intent. Returns plan JSON including plan_id, title, operations, and risk_level.")]
@@ -65,7 +65,7 @@ public sealed class OrchestratorPlugin
         CancellationToken cancellationToken = default)
     {
         _plannerTools.BeginPlan(intent);
-        return _runner.RunAsync(_planner, PlannerAgent.BuildUserMessage(intent, investigator_summary, GetAnswers()), cancellationToken);
+        return RunAndSurfaceQuestion(_planner, PlannerAgent.BuildUserMessage(intent, investigator_summary, GetAnswers()), cancellationToken);
     }
 
     [KernelFunction("critique_plan")]
@@ -73,21 +73,38 @@ public sealed class OrchestratorPlugin
     public Task<string> CritiquePlan(
         [Description("The plan_id to critique")] string plan_id,
         CancellationToken cancellationToken = default) =>
-        _runner.RunAsync(_critic, CriticAgent.BuildUserMessage(plan_id, GetAnswers()), cancellationToken);
+        RunAndSurfaceQuestion(_critic, CriticAgent.BuildUserMessage(plan_id, GetAnswers()), cancellationToken);
+
+    private async Task<string> RunAndSurfaceQuestion(
+        ChatCompletionAgent agent,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        using var trace = AgentStreamTrace.Push();
+        var finalText = await _runner.RunAsync(agent, message, cancellationToken);
+        if (QuestionResultExtractor.HasQuestionId(finalText)) return finalText;
+        return QuestionResultExtractor.FindLastQuestionResult(trace.Events) ?? finalText;
+    }
 
     [KernelFunction("ask_clarifying_question")]
     [Description("Ask the user a targeted clarification question when planning is blocked by ambiguity or critic feedback requires a human choice.")]
-    public Task<string> AskClarifyingQuestion(
+    public async Task<string> AskClarifyingQuestion(
         [Description("Why a user choice is needed")] string context,
         [Description("Recommended default choice if known")] string? recommended_default = null,
         [Description("general, name_correction, scope_confirmation, scope_exclusions, or business_reason")] string category = "general",
         [Description("Destructive or preference scope this answer applies to, if any")] string? confirmation_scope = null,
         [Description("Agent that needs the answer")] string originating_agent = "orchestrator",
-        CancellationToken cancellationToken = default) =>
-        _runner.RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var trace = AgentStreamTrace.Push();
+        var finalText = await _runner.RunAsync(
             _questioner,
             QuestionerAgent.BuildUserMessage(context, recommended_default, category, confirmation_scope, originating_agent),
             cancellationToken);
+
+        if (QuestionResultExtractor.HasQuestionId(finalText)) return finalText;
+        return QuestionResultExtractor.FindLastQuestionResult(trace.Events) ?? finalText;
+    }
 
     [KernelFunction("execute_plan")]
     [Description("Apply an approved deployment plan to Azure. Only call after the user has approved the plan.")]
@@ -104,7 +121,7 @@ public sealed class OrchestratorPlugin
                 message = "No approved plan found for this session. Ask the user to approve a plan first."
             });
 
-        return await _runner.RunAsync(_executor, ExecutorAgent.BuildUserMessage(resolved, GetAnswers()), cancellationToken);
+        return await RunAndSurfaceQuestion(_executor, ExecutorAgent.BuildUserMessage(resolved, GetAnswers()), cancellationToken);
     }
 
     private string? ResolvePlanId(string? planId)

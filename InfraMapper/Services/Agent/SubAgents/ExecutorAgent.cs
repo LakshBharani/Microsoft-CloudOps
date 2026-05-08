@@ -67,28 +67,38 @@ public sealed class ExecutorAgent
           • title: deployment description
           • operations: array of { action, resource_type, resource_name, resource_group, details }
           • risk_level: Low / Medium / High
+          • template_json: complete deployable ARM template JSON for create/update/deploy plans
+          • parameters_json, resource_group_name, location, deployment_name
 
         STEP 2 — CHOOSE APPLY STRATEGY
-        Inspect the operations:
+        Inspect the plan:
+
+          PLAN HAS template_json:
+          → Deploy template_json exactly as approved by calling deploy_arm_template.
+            Use parameters_json if present, otherwise "{}".
+            Use deployment_name from the plan if present, otherwise choose "deployment-{shortPlanId}".
+            Use resource_group_name from the plan for resource-group-scoped templates.
+            Use location from the plan for subscription-scoped templates.
+            Do not rewrite, simplify, or regenerate the template.
+
+          PLAN HAS NO template_json:
+          → This is allowed only for delete-only plans or legacy fallback operations.
 
           RESOURCE REMOVAL operations only:
           → Call apply_resource_mutation for each operation with operation="Delete".
             Construct the ARM resource ID from resource_type + resource_name + resource_group.
             ARM resource ID format: /subscriptions/{sub}/resourceGroups/{rg}/providers/{type}/{name}
 
-          CREATE / UPDATE / DEPLOY operations:
-          → Construct a complete ARM template JSON from the operations list. Include:
-              - $schema, contentVersion, resources array
-              - For each operation: type, name, apiVersion, location, properties, sku (from details field)
-              - dependsOn arrays matching dependency order in the plan
-          → Call deploy_arm_template with the plan_id, a deployment name, and the constructed templateJson.
-            Use resource_group from the first resource that has one; use subscription-scope if creating an RG.
-            Do not invent or pass plan_id as a subscription ID. Backend will use the session subscription.
+          CREATE / UPDATE / DEPLOY operations without template_json:
+          → Return {"error":true,"error_type":"missing_template_json","needs_replan":true,
+             "message":"Approved plan has mutating operations but no template_json."}
 
         STEP 3 — HANDLE RESULTS
         • If result has needs_replan:true, return the full error JSON without another attempt.
         • If result has error_type:"transient", retry once.
         • If deployment succeeds, return the result JSON including deployment_name.
+        • If no write tool was called, or the result is not structured JSON, return:
+          {"error":true,"error_type":"executor_no_result","needs_replan":true,"message":"Executor could not produce a structured deployment result."}
 
         CRITICAL:
         • Always use the plan_id from the plan as the approved plan_id for write tools.

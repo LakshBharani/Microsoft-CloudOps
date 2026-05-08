@@ -17,17 +17,27 @@ AgentRegistry.Configure(builder.Configuration);
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<AzureResourceService>();
+builder.Services.AddSingleton<ArmExistenceProbe>();
 builder.Services.AddSingleton<DiffService>();
 builder.Services.AddSingleton<AzureDevOpsService>();
 builder.Services.AddSingleton<InfraIntentCompiler>();
 
 builder.Services.AddSingleton<TokenCredential>(_ =>
 {
+    if (builder.Environment.IsDevelopment())
+    {
+        return new AzureCliCredential(new AzureCliCredentialOptions
+        {
+            TenantId = builder.Configuration["AZURE_TENANT_ID"]
+        });
+    }
+
     var options = new DefaultAzureCredentialOptions
     {
-        ExcludeManagedIdentityCredential = builder.Environment.IsDevelopment(),
         ExcludeVisualStudioCredential = true,
-        ExcludeVisualStudioCodeCredential = true
+        ExcludeVisualStudioCodeCredential = true,
+        ExcludeSharedTokenCacheCredential = true,
+        ExcludeInteractiveBrowserCredential = true
     };
     return new DefaultAzureCredential(options);
 });

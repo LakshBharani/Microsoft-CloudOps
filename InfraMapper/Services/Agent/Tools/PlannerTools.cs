@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using InfraMapper.Services.Agent.Memory;
+using InfraMapper.Services.Agent.State;
 using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
@@ -11,6 +12,7 @@ public sealed class PlannerTools
     private readonly PlanStore _planStore;
     private readonly ILessonsStore _lessonsStore;
     private readonly string _sessionId;
+    private AgentTaskState? _taskState;
     private string _currentIntent = "";
 
     public PlannerTools(PlanStore planStore, ILessonsStore lessonsStore, string sessionId)
@@ -20,9 +22,11 @@ public sealed class PlannerTools
         _sessionId = sessionId;
     }
 
+    public void SyncWithTaskState(AgentTaskState state) => _taskState = state;
+
     public void BeginPlan(string intent)
     {
-        _currentIntent = intent;
+        _currentIntent = intent ?? "";
     }
 
     [KernelFunction("get_lessons")]
@@ -45,8 +49,6 @@ public sealed class PlannerTools
     public string RecordCritique(
         [Description("Detailed critique covering naming, dependencies, region/SKU, security, missing properties, and ordering issues")] string analysis)
     {
-        // No persistent storage needed in Phase 2; the tool forces the LLM to surface the critique
-        // in its chain-of-thought before committing to create_plan.
         return "Critique recorded. Now revise your ARM template to address every issue you identified, " +
                "then call create_plan with the improved version.";
     }
@@ -58,7 +60,12 @@ public sealed class PlannerTools
         [Description("Short descriptive title for this deployment plan")] string title,
         [Description("Complete list of Azure operations to perform as a JSON array. Each item must have action, resource_type, resource_name, resource_group, and details.")] JsonElement operations,
         [Description("Risk level: Low, Medium, or High")] string riskLevel = "Medium",
-        [Description("Optional human-readable cost estimate")] string? estimatedCostNote = null)
+        [Description("Optional human-readable cost estimate")] string? estimatedCostNote = null,
+        [Description("Full deployable ARM template JSON for all Create/Update/Deploy operations. Required unless the plan is delete-only or clarification-only. Pass a JSON object or a JSON string.")] JsonElement templateJson = default,
+        [Description("ARM parameters JSON. Use {} when no parameters are needed. Pass a JSON object or a JSON string.")] JsonElement parametersJson = default,
+        [Description("Resource group for a resource-group-scoped deployment. Leave empty for subscription-scoped templates that create resource groups.")] string? resourceGroupName = null,
+        [Description("Deployment location for subscription-scoped deployments, e.g. eastus.")] string? location = null,
+        [Description("Optional deployment name. If omitted, Executor will choose one.")] string? deploymentName = null)
     {
         var parsedOperations = ParseOperations(operations);
         if (parsedOperations is null)
@@ -82,15 +89,50 @@ public sealed class PlannerTools
             }, OrchestratorTools.SnakeCaseOpts);
         }
 
-        var validationError = ValidateUserNamedResources(parsedOperations);
-        if (validationError is not null)
-            return validationError;
+        var nameChoiceError = ValidateUserNamedResources(parsedOperations);
+        if (nameChoiceError is not null) return nameChoiceError;
+
+        var templateJsonText = NormalizeJsonArgument(templateJson);
+        var parametersJsonText = NormalizeJsonArgument(parametersJson) ?? "{}";
+
+        var structural = PlanStructuralValidator.Validate(_taskState, parsedOperations, templateJsonText);
+        if (structural is not null) return SerializeValidatorError(structural);
+
+        var policy = PlanPolicyValidator.Validate(_taskState, parsedOperations);
+        if (policy is not null) return SerializeValidatorError(policy);
+
+        if (!string.IsNullOrWhiteSpace(parametersJsonText) && parametersJsonText != "{}")
+        {
+            try { using var _ = JsonDocument.Parse(parametersJsonText); }
+            catch (JsonException ex)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    error = true,
+                    error_type = "invalid_parameters_json",
+                    message = $"parameters_json is not valid JSON: {ex.Message}"
+                }, OrchestratorTools.SnakeCaseOpts);
+            }
+        }
 
         var planDataEl = JsonSerializer.SerializeToElement(
-            new { title, operations = parsedOperations, risk_level = riskLevel, estimated_cost_note = estimatedCostNote },
+            new
+            {
+                title,
+                operations = parsedOperations,
+                risk_level = riskLevel,
+                estimated_cost_note = estimatedCostNote,
+                template_json = string.IsNullOrWhiteSpace(templateJsonText) ? null : templateJsonText,
+                parameters_json = string.IsNullOrWhiteSpace(parametersJsonText) ? "{}" : parametersJsonText,
+                resource_group_name = string.IsNullOrWhiteSpace(resourceGroupName) ? null : resourceGroupName,
+                location = string.IsNullOrWhiteSpace(location) ? null : location,
+                deployment_name = string.IsNullOrWhiteSpace(deploymentName) ? null : deploymentName
+            },
             OrchestratorTools.SnakeCaseOpts);
 
         var planId = _planStore.CreatePlan(_sessionId, planDataEl);
+        if (_taskState is not null)
+            _taskState.CandidatePlanId = planId;
 
         return JsonSerializer.Serialize(new
         {
@@ -100,7 +142,44 @@ public sealed class PlannerTools
             operations = parsedOperations,
             risk_level = riskLevel,
             estimated_cost_note = estimatedCostNote,
+            template_json = string.IsNullOrWhiteSpace(templateJsonText) ? null : templateJsonText,
+            parameters_json = string.IsNullOrWhiteSpace(parametersJsonText) ? "{}" : parametersJsonText,
+            resource_group_name = string.IsNullOrWhiteSpace(resourceGroupName) ? null : resourceGroupName,
+            location = string.IsNullOrWhiteSpace(location) ? null : location,
+            deployment_name = string.IsNullOrWhiteSpace(deploymentName) ? null : deploymentName
         }, OrchestratorTools.SnakeCaseOpts);
+    }
+
+    private static string SerializeValidatorError(ValidatorError error)
+    {
+        if (error.Extra is null)
+            return JsonSerializer.Serialize(new
+            {
+                error = true,
+                error_type = error.ErrorType,
+                message = error.Message
+            }, OrchestratorTools.SnakeCaseOpts);
+
+        var extraEl = JsonSerializer.SerializeToElement(error.Extra, OrchestratorTools.SnakeCaseOpts);
+        var doc = new Dictionary<string, object?>
+        {
+            ["error"] = true,
+            ["error_type"] = error.ErrorType,
+            ["message"] = error.Message
+        };
+        foreach (var prop in extraEl.EnumerateObject())
+            doc[prop.Name] = prop.Value.Clone();
+        return JsonSerializer.Serialize(doc, OrchestratorTools.SnakeCaseOpts);
+    }
+
+    private static string? NormalizeJsonArgument(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Undefined or JsonValueKind.Null => null,
+            JsonValueKind.String => value.GetString(),
+            _ => value.GetRawText()
+        };
     }
 
     private static PlanOperationDto[]? ParseOperations(JsonElement operations)
@@ -163,7 +242,7 @@ public sealed class PlannerTools
 
     private string? ValidateUserNamedResources(PlanOperationDto[] operations)
     {
-        var requestedStorageNames = ExtractRequestedStorageAccountNames(_currentIntent);
+        var requestedStorageNames = ExtractRequestedStorageAccountNames();
         if (requestedStorageNames.Count == 0)
             return null;
 
@@ -193,6 +272,33 @@ public sealed class PlannerTools
                 $"The plan changed the user-supplied storage account name instead of asking for confirmation. User requested: {string.Join(", ", requestedStorageNames)}. Planned: {string.Join(", ", plannedStorageNames)}. Ask the user to choose a valid replacement name before creating the plan.");
 
         return null;
+    }
+
+    private IReadOnlyList<string> ExtractRequestedStorageAccountNames()
+    {
+        if (_taskState is not null)
+        {
+            var fromState = _taskState.RequiredComponents
+                .Where(c => string.Equals(c.ResourceTypeHint, "Microsoft.Storage/storageAccounts", StringComparison.OrdinalIgnoreCase))
+                .Select(c => c.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (fromState.Length > 0) return fromState;
+        }
+
+        if (string.IsNullOrWhiteSpace(_currentIntent))
+            return Array.Empty<string>();
+
+        var names = new List<string>();
+        AddMatches(names, Regex.Matches(
+            _currentIntent,
+            @"\b(?:Create|Update|Deploy)\s+Microsoft\.Storage/storageAccounts\s+""([^""]+)""",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+
+        return names
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static bool IsStorageAccountOperation(PlanOperationDto operation) =>
@@ -230,33 +336,6 @@ public sealed class PlannerTools
             allow_custom = true,
             suggestion = "Call ask_clarifying_question. Do not invent a replacement name."
         }, OrchestratorTools.SnakeCaseOpts);
-
-    private static IReadOnlyList<string> ExtractRequestedStorageAccountNames(string intent)
-    {
-        if (string.IsNullOrWhiteSpace(intent))
-            return Array.Empty<string>();
-
-        var names = new List<string>();
-        AddMatches(names, Regex.Matches(
-            intent,
-            @"\b(?:Create|Update|Deploy)\s+Microsoft\.Storage/storageAccounts\s+""([^""]+)""",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
-
-        AddMatches(names, Regex.Matches(
-            intent,
-            @"""(?:type|resource_type)""\s*:\s*""Microsoft\.Storage/storageAccounts""[\s\S]{0,500}?""(?:name|resource_name)""\s*:\s*""([^""]+)""",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
-
-        AddMatches(names, Regex.Matches(
-            intent,
-            @"""(?:name|resource_name)""\s*:\s*""([^""]+)""[\s\S]{0,500}?""(?:type|resource_type)""\s*:\s*""Microsoft\.Storage/storageAccounts""",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
-
-        return names
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
 
     private static void AddMatches(List<string> names, MatchCollection matches)
     {

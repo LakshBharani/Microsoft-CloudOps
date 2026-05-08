@@ -9,45 +9,26 @@ namespace InfraMapper.Services;
 
 public class AzureResourceService
 {
-    private readonly HttpClient _httpClient = new HttpClient();
+    private readonly HttpClient _httpClient;
     private readonly DependencyResolver _resolver = new DependencyResolver();
     private readonly TokenCredential _credential;
 
     public AzureResourceService(TokenCredential credential)
     {
         _credential = credential;
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
     }
 
-    public async Task<InfrastructureGraph> GetInfrastructureAsync(string subscriptionId)
+    public async Task<InfrastructureGraph> GetInfrastructureAsync(
+        string subscriptionId,
+        CancellationToken cancellationToken = default)
     {
-        var token = await _credential.GetTokenAsync(
-            new Azure.Core.TokenRequestContext(
-                ["https://management.azure.com/.default"]
-            ),
-            CancellationToken.None
-        );
-
-        _httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", token.Token);
-
-        var url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01";
-
-        var requestBody = new
-        {
-            subscriptions = new[] { subscriptionId },
-            query = "Resources | project id, name, type, resourceGroup, location, tags, properties, sku, kind" +
-                    " | union (ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'" +
-                    " | project id, name, type = 'Microsoft.Resources/resourceGroups', resourceGroup = name, location, tags, properties)"
-        };
-
-        var content = new StringContent(
-            JsonSerializer.Serialize(requestBody),
-            Encoding.UTF8,
-            "application/json"
-        );
-
-        var response = await _httpClient.PostAsync(url, content);
-        var json = await response.Content.ReadAsStringAsync();
+        var json = await QueryResourceGraphAsync(
+            subscriptionId,
+            "Resources | project id, name, type, resourceGroup, location, tags, properties, sku, kind" +
+            " | union (ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'" +
+            " | project id, name, type = 'Microsoft.Resources/resourceGroups', resourceGroup = name, location, tags, properties)",
+            cancellationToken);
 
         var doc = JsonDocument.Parse(json);
 
@@ -65,38 +46,25 @@ public class AzureResourceService
         return graph;
     }
 
-    public async Task<InfrastructureGraphSummary> GetInfrastructureGraphSummaryAsync(string subscriptionId)
+    public async Task<InfrastructureGraphSummary> GetInfrastructureGraphSummaryAsync(
+        string subscriptionId,
+        string? resourceGroupFilter = null,
+        CancellationToken cancellationToken = default)
     {
-        var token = await _credential.GetTokenAsync(
-            new Azure.Core.TokenRequestContext(
-                ["https://management.azure.com/.default"]
-            ),
-            CancellationToken.None
-        );
+        var resourceFilter = string.IsNullOrWhiteSpace(resourceGroupFilter)
+            ? ""
+            : $" | where resourceGroup =~ '{resourceGroupFilter.Replace("'", "''")}'";
+        var rgFilter = string.IsNullOrWhiteSpace(resourceGroupFilter)
+            ? ""
+            : $" | where name =~ '{resourceGroupFilter.Replace("'", "''")}'";
 
-        _httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", token.Token);
+        var query =
+            "Resources | project id, name, type, resourceGroup, location, properties" + resourceFilter +
+            " | union (ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'" +
+            rgFilter +
+            " | project id, name, type = 'Microsoft.Resources/resourceGroups', resourceGroup = name, location, properties)";
 
-        var url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01";
-
-        var requestBody = new
-        {
-            subscriptions = new[] { subscriptionId },
-            // Include properties so dependency resolver can extract referenced ARM ids (workspaceId, subnetId, serverFarmId, etc.).
-            // Tags/sku/kind are omitted to keep payload smaller than full inventory.
-            query = "Resources | project id, name, type, resourceGroup, location, properties" +
-                    " | union (ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'" +
-                    " | project id, name, type = 'Microsoft.Resources/resourceGroups', resourceGroup = name, location, properties)"
-        };
-
-        var content = new StringContent(
-            JsonSerializer.Serialize(requestBody),
-            Encoding.UTF8,
-            "application/json"
-        );
-
-        var response = await _httpClient.PostAsync(url, content);
-        var json = await response.Content.ReadAsStringAsync();
+        var json = await QueryResourceGraphAsync(subscriptionId, query, cancellationToken);
 
         var doc = JsonDocument.Parse(json);
 
@@ -110,7 +78,7 @@ public class AzureResourceService
 
         var edges = _resolver.ResolveDependencies(nodesForResolver);
 
-        var summary = new InfrastructureGraphSummary
+        return new InfrastructureGraphSummary
         {
             Nodes = nodesForResolver
                 .Select(n => new GraphNodeSummary
@@ -124,7 +92,32 @@ public class AzureResourceService
                 .ToList(),
             Edges = edges
         };
+    }
 
-        return summary;
+    private async Task<string> QueryResourceGraphAsync(
+        string subscriptionId,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        var token = await _credential.GetTokenAsync(
+            new TokenRequestContext(["https://management.azure.com/.default"]),
+            cancellationToken);
+
+        const string url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01";
+
+        var requestBody = new
+        {
+            subscriptions = new[] { subscriptionId },
+            query
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return await response.Content.ReadAsStringAsync(cancellationToken);
     }
 }

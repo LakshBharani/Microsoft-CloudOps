@@ -105,9 +105,22 @@ export default function Home() {
     }
   }
 
-  function handleApplyDiff(result: DiffResult) {
-    // Build a natural-language prompt describing the diff and send it to the agent
-    const lines: string[] = ["Apply the following infrastructure changes:"];
+  function handleApplyDiff(result: DiffResult, desiredJson?: string) {
+    // Send the original intent/desired JSON too. The diff is useful context, but intent JSON may
+    // contain components the current deterministic diff/compiler cannot fully expand yet.
+    const lines: string[] = [
+      "Apply the following infrastructure intent. The JSON below is the authoritative source of truth for scope, components, tags, and constraints. Every component listed in the JSON MUST appear in the plan and ARM template, even if the diff does not mention it.",
+      "The diff is REFERENCE ONLY — it shows current Azure state vs intent, but it does not define scope. Do not shrink the plan to match the diff."
+    ];
+    if (desiredJson?.trim()) {
+      lines.push("");
+      lines.push("Original infrastructure JSON (authoritative):");
+      lines.push("```json");
+      lines.push(desiredJson.trim());
+      lines.push("```");
+      lines.push("");
+    }
+    lines.push("Computed diff (reference only — current Azure state vs intent):");
     result.toCreate.forEach((n) => lines.push(`- Create ${n.type} "${n.name}" in resource group "${n.resourceGroup}" (${n.location})`));
     result.toUpdate.forEach((n) => {
       const changeDesc = n.changes.map((c) => `${c.field}: ${c.from} → ${c.to}`).join(", ");

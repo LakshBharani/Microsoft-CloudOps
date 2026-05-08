@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using InfraMapper.Services.Agent.Runtime;
+using InfraMapper.Services.Agent.State;
 using InfraMapper.Services.Agent.SubAgents;
 using InfraMapper.Services.Agent.Tools;
 using Microsoft.SemanticKernel.Agents;
@@ -14,6 +15,8 @@ public sealed class ConversationStore
         OrchestratorPlugin Orchestrator,
         ExecutorTools ExecutorTools,
         SkAgentSession Session,
+        AgentTaskState TaskState,
+        PlannerTools PlannerTools,
         DateTimeOffset LastAccessed);
 
     private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new();
@@ -122,7 +125,8 @@ public sealed class ConversationStore
             (orcTools, "azure"));
 
         var session = new SkAgentSession();
-        var entry = new SessionEntry(agent, orchestratorPlugin, executorTools, session, DateTimeOffset.UtcNow);
+        var taskState = new AgentTaskState { SessionId = sessionId };
+        var entry = new SessionEntry(agent, orchestratorPlugin, executorTools, session, taskState, plannerTools, DateTimeOffset.UtcNow);
 
         // Use AddOrUpdate to handle the rare case of concurrent first requests.
         var stored = _sessions.AddOrUpdate(sessionId, entry, (_, existing2) =>
@@ -211,6 +215,32 @@ public sealed class ConversationStore
         }
     }
 
+    public AgentTaskState? GetTaskState(string sessionId) =>
+        _sessions.TryGetValue(sessionId, out var entry) ? entry.TaskState : null;
+
+    public void IngestIntent(string sessionId, string subscriptionId, string userMessage)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
+        var parsed = IntentParser.Parse(userMessage, subscriptionId);
+        Console.WriteLine($"[ConversationStore] ingest_intent session={sessionId} components={parsed.RequiredComponents.Count} json_extracted={!string.IsNullOrWhiteSpace(parsed.OriginalIntentJson)} rg={parsed.ResourceGroup}");
+        if (parsed.RequiredComponents.Count == 0 && string.IsNullOrWhiteSpace(parsed.OriginalIntentJson))
+            return;
+        entry.TaskState.Initialize(parsed, subscriptionId, userMessage);
+        entry.PlannerTools.SyncWithTaskState(entry.TaskState);
+    }
+
+    public void RecordAnswer(string sessionId, ClarificationAnswerSnapshot answer)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
+        entry.TaskState.AddAnswer(answer);
+    }
+
+    public void RecordFailure(string sessionId, ExecutionFailureSnapshot failure)
+    {
+        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
+        entry.TaskState.AddFailure(failure);
+    }
+
     public void Remove(string sessionId) => _sessions.TryRemove(sessionId, out _);
 
     public void Evict(TimeSpan maxIdle)
@@ -231,6 +261,9 @@ public sealed class ConversationStore
         Rules:
         - INVESTIGATE: call investigate_infrastructure(focus, subscription_id?) freely before planning.
           The Investigator discovers existing resources and returns a focused summary.
+        - PLAN: call plan_deployment to turn user intent into a complete plan. For create/update/deploy
+          work, Planner must produce the deployable ARM template in template_json; Executor deploys
+          that approved template and should not infer resource-specific ARM properties from prose.
         - CHECK STATUS: call get_deployment_status for deployment status checks.
         - ASK: call ask_clarifying_question only when planning is blocked by ambiguity,
           planner needs a preference, or critic feedback requires a human choice.
@@ -287,6 +320,9 @@ public sealed class ConversationStore
           This is your ONLY signal to call execute_plan. Do not call execute_plan without it.
           If execute_plan returns error_type:"plan_not_approved", do NOT retry —
           the user has not approved yet; tell them to click the Approve button.
+          If execute_plan fails, do NOT finish with "done". Send the exact failure context back
+          through investigation + planning, produce a revised plan, wait for approval, and retry
+          after approval. Repeat this recovery loop until execution succeeds or the user stops it.
 
         ── EXECUTION PATHS BY BLAST RADIUS ─────────────────────────────────────
 
@@ -297,7 +333,8 @@ public sealed class ConversationStore
           MEDIUM path:
           PHASE A: Call plan_deployment(intent, investigator_summary?). Output plan summary. STOP.
           PHASE B: On approval signal → call execute_plan(plan_id).
-                   If needs_replan:true, call plan_deployment once, then execute again.
+                   If needs_replan:true, investigate current state, call plan_deployment for a revised plan,
+                   wait for approval, then execute again. Repeat on each failure.
                    Call reflect_on_deployment.
 
           HIGH path:
@@ -308,14 +345,16 @@ public sealed class ConversationStore
           3. Call plan_deployment(intent, investigator_summary?). Include any structured
              clarification answer context in the intent so Planner documents confirmation evidence.
           4. Call critique_plan(plan_id).
-             If approved:false, call plan_deployment again with feedback. Repeat at most ONCE more (2 total plan calls).
+             If approved:false, call plan_deployment again with feedback. Repeat until approved
+             or until a human clarification is needed.
              If feedback includes requires_user_choice, first compare it with existing structured
              clarification context. If already covered, re-plan/re-critique with the documented
              confirmation evidence. If not covered and a user choice can unblock the plan, call
              ask_clarifying_question; otherwise output the rejection reason.
           5. Once approved:true, output a concise plan summary. STOP.
           PHASE B: On approval signal → call execute_plan(plan_id).
-                   If needs_replan:true, re-plan once, critique once, then execute.
+                   If needs_replan:true, investigate current state, re-plan, critique, wait for approval,
+                   then execute again. Repeat on each failure.
                    Call reflect_on_deployment.
 
         General rules:

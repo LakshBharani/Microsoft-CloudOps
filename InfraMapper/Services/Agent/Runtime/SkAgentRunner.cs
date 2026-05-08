@@ -10,6 +10,19 @@ namespace InfraMapper.Services.Agent.Runtime;
 public sealed class SkAgentRunner
 {
     private const int DefaultTimeoutSeconds = 90;
+    private const int LongRunningAgentTimeoutSeconds = 120;
+    private const int HostingAgentTimeoutSeconds = 300;
+    private static readonly HashSet<string> LongRunningAgentNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "planner",
+        "investigator",
+        "critic"
+    };
+    private static readonly HashSet<string> HostingAgentNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "orchestrator",
+        "executor"
+    };
 
     public async IAsyncEnumerable<AgentStreamEvent> RunStreamingAsync(
         ChatCompletionAgent agent,
@@ -33,28 +46,47 @@ public sealed class SkAgentRunner
             KernelArguments = arguments
         };
 
+        var timeout = GetTimeout(agent.Name);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+
+        var watchdog = timeoutCts.Token.Register(() =>
+        {
+            Console.WriteLine($"[SkRunner] watchdog_fire agent={agent.Name} timeout={timeout.TotalSeconds}s");
+            channel.Writer.TryWrite(new AgentStreamEvent.Error(
+                $"OpenAI/Semantic Kernel agent call ({agent.Name ?? "agent"}) timed out after {timeout.TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
+            channel.Writer.TryComplete();
+        });
+
         var runTask = Task.Run(async () =>
         {
             string finalText = "";
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(GetTimeout());
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            Console.WriteLine($"[SkRunner] invoke_start agent={agent.Name} timeout={timeout.TotalSeconds}s");
 
             try
             {
+                var chunkCount = 0;
                 await foreach (var item in agent.InvokeAsync(message, session.Thread, options, timeoutCts.Token))
                 {
                     session.Thread = item.Thread;
                     finalText += item.Message.Content ?? "";
+                    chunkCount++;
+                    if (chunkCount == 1 || chunkCount % 10 == 0)
+                        Console.WriteLine($"[SkRunner] agent={agent.Name} chunks={chunkCount} elapsed={stopwatch.Elapsed.TotalSeconds:0.0}s");
                 }
 
+                Console.WriteLine($"[SkRunner] invoke_done agent={agent.Name} chunks={chunkCount} elapsed={stopwatch.Elapsed.TotalSeconds:0.0}s text_len={finalText.Length}");
                 channel.Writer.TryWrite(new AgentStreamEvent.Done(finalText));
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                channel.Writer.TryWrite(new AgentStreamEvent.Error($"OpenAI/Semantic Kernel agent call timed out after {GetTimeout().TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
+                Console.WriteLine($"[SkRunner] timeout agent={agent.Name} elapsed={stopwatch.Elapsed.TotalSeconds:0.0}s");
+                channel.Writer.TryWrite(new AgentStreamEvent.Error($"OpenAI/Semantic Kernel agent call ({agent.Name ?? "agent"}) timed out after {timeout.TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[SkRunner] error agent={agent.Name} elapsed={stopwatch.Elapsed.TotalSeconds:0.0}s {ex.GetType().Name}: {ex.Message}");
                 channel.Writer.TryWrite(new AgentStreamEvent.Error(NormalizeError(ex)));
             }
             finally
@@ -70,6 +102,7 @@ public sealed class SkAgentRunner
         }
         finally
         {
+            watchdog.Dispose();
             try { await runTask; }
             catch { /* surfaced via channel events */ }
         }
@@ -108,13 +141,27 @@ public sealed class SkAgentRunner
         return new KernelArguments(settings);
     }
 
-    private static TimeSpan GetTimeout()
+    private static TimeSpan GetTimeout(string? agentName)
     {
-        var seconds = int.TryParse(Environment.GetEnvironmentVariable("AZURE_AI_TIMEOUT_SECONDS"), out var value) && value > 0
-            ? value
-            : DefaultTimeoutSeconds;
+        if (!string.IsNullOrWhiteSpace(agentName))
+        {
+            var perAgentVar = $"INFRAMAPPER_{agentName.ToUpperInvariant()}_TIMEOUT_SECONDS";
+            if (int.TryParse(Environment.GetEnvironmentVariable(perAgentVar), out var perAgentValue) && perAgentValue > 0)
+                return TimeSpan.FromSeconds(perAgentValue);
+        }
 
-        return TimeSpan.FromSeconds(seconds);
+        if (int.TryParse(Environment.GetEnvironmentVariable("AZURE_AI_TIMEOUT_SECONDS"), out var globalValue) && globalValue > 0)
+            return TimeSpan.FromSeconds(globalValue);
+
+        var fallback = DefaultTimeoutSeconds;
+        if (!string.IsNullOrWhiteSpace(agentName))
+        {
+            if (HostingAgentNames.Contains(agentName))
+                fallback = HostingAgentTimeoutSeconds;
+            else if (LongRunningAgentNames.Contains(agentName))
+                fallback = LongRunningAgentTimeoutSeconds;
+        }
+        return TimeSpan.FromSeconds(fallback);
     }
 
     private static string NormalizeError(Exception ex)

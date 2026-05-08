@@ -90,7 +90,7 @@ function DiffSection({
 interface Props {
   subscriptionId: string;
   onDiff: (desiredJson: string) => void;
-  onApply: (result: DiffResult) => void;
+  onApply: (result: DiffResult, desiredJson: string) => void;
   onClose: () => void;
   onOpenSettings: () => void;
   result: DiffResult | null;
@@ -284,7 +284,7 @@ export default function DiffPanel({ subscriptionId, onDiff, onApply, onClose, on
       {canApply && (
         <div className="px-3 py-3 border-t border-slate-700 flex-shrink-0">
           <button
-            onClick={() => onApply(result!)}
+            onClick={() => onApply(result!, editorValue)}
             className="w-full flex items-center justify-center gap-1.5 text-xs bg-green-700 hover:bg-green-600 text-white px-3 py-2 rounded transition-colors font-medium"
           >
             Apply {totalChanges} change{totalChanges !== 1 ? "s" : ""} via Agent

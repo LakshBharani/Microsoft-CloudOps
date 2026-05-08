@@ -61,17 +61,15 @@ public class DevOpsExecuteController : ControllerBase
         if (string.IsNullOrWhiteSpace(desiredJson))
             return Ok(new { skipped = true, reason = "desired-state.json is empty or missing." });
 
-        CompiledInfraIntent? compiled = null;
+        bool isIntentJson = false;
         DesiredStateSpec spec;
         try
         {
             using var doc = JsonDocument.Parse(desiredJson);
             if (InfraIntentCompiler.LooksLikeIntent(doc.RootElement))
             {
-                var intent = doc.RootElement.Deserialize<InfraIntentSpec>(JsonOpts)
-                    ?? throw new InvalidOperationException("Intent JSON is empty.");
-                compiled = _intentCompiler.Compile(intent, subscriptionId);
-                spec = compiled.DesiredState;
+                isIntentJson = true;
+                spec = new DesiredStateSpec();
             }
             else
             {
@@ -80,6 +78,14 @@ public class DevOpsExecuteController : ControllerBase
             }
         }
         catch (Exception ex) { return BadRequest($"Could not parse desired-state.json: {ex.Message}"); }
+
+        if (isIntentJson)
+            return await ExecuteAgentPromptAsync(
+                BuildIntentPrompt(desiredJson),
+                subscriptionId,
+                cfg,
+                prId,
+                ct);
 
         // 2. Diff vs live Azure
         DiffResult diff;
@@ -95,39 +101,19 @@ public class DevOpsExecuteController : ControllerBase
 
         _logger.LogInformation("Execute: {Total} change(s) to apply.", total);
 
-        if (compiled is not null)
-        {
-            var applyResult = await _deploymentService.CreateOrUpdateAsync(new ArmDeploymentApplyInput
-            {
-                SubscriptionId = subscriptionId,
-                DeploymentName = compiled.DeploymentName,
-                TemplateJson = compiled.TemplateJson,
-                ResourceGroupName = compiled.ResourceGroupName,
-                Location = compiled.Location,
-                Mode = "Incremental",
-                WaitForCompletion = true
-            }, ct);
-
-            var comment = applyResult.Succeeded
-                ? $"## InfraMapper Intent Execution Complete\n\nDeployment `{compiled.DeploymentName}` succeeded."
-                : $"## InfraMapper Intent Execution Failed\n\nDeployment `{compiled.DeploymentName}` failed: {applyResult.ErrorMessage}";
-            if (prId.HasValue)
-            {
-                try { await _ado.PostPrCommentAsync(cfg, prId.Value, comment, ct); }
-                catch (Exception ex) { _logger.LogWarning("Could not post PR comment: {Error}", ex.Message); }
-            }
-
-            return Ok(new
-            {
-                succeeded = applyResult.Succeeded,
-                reply = applyResult.Succeeded ? "Intent deployment completed." : applyResult.ErrorMessage,
-                changes = total,
-                deploymentName = compiled.DeploymentName
-            });
-        }
-
         // 3. Build prompt from diff and run agent with auto-approve
         var prompt = BuildPrompt(diff);
+        return await ExecuteAgentPromptAsync(prompt, subscriptionId, cfg, prId, ct, total);
+    }
+
+    private async Task<IActionResult> ExecuteAgentPromptAsync(
+        string prompt,
+        string subscriptionId,
+        AzureDevOpsConfig cfg,
+        int? prId,
+        CancellationToken ct,
+        int? changes = null)
+    {
         var sessionId = Guid.NewGuid().ToString();
         var request = new AgentChatRequest
         {
@@ -163,7 +149,6 @@ public class DevOpsExecuteController : ControllerBase
             finalReply = ex.Message;
         }
 
-        // 4. Post result as PR comment if prId provided
         if (prId.HasValue)
         {
             var comment = succeeded
@@ -173,8 +158,18 @@ public class DevOpsExecuteController : ControllerBase
             catch (Exception ex) { _logger.LogWarning("Could not post PR comment: {Error}", ex.Message); }
         }
 
-        return Ok(new { succeeded, reply = finalReply, changes = total });
+        return Ok(new { succeeded, reply = finalReply, changes });
     }
+
+    private static string BuildIntentPrompt(string desiredJson) => $"""
+        Apply the following infrastructure intent JSON. Treat the JSON as source of truth.
+        Investigate existing Azure state first, then create a complete deployable ARM template
+        in the plan template_json. Do not rely on hardcoded backend component builders.
+
+        ```json
+        {desiredJson}
+        ```
+        """;
 
     private static string BuildPrompt(DiffResult diff)
     {

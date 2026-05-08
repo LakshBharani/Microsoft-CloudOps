@@ -82,7 +82,7 @@ public sealed class ExecutorTools
                     return JsonSerializer.Serialize(new
                     {
                         needs_replan = true,
-                        error_type = ClassifyError(result.HttpStatus),
+                        error_type = ClassifyError(result.HttpStatus, result.ErrorMessage),
                         http_status = result.HttpStatus,
                         message = result.ErrorMessage,
                         deployment_name,
@@ -98,7 +98,7 @@ public sealed class ExecutorTools
             return JsonSerializer.Serialize(new
             {
                 needs_replan = true,
-                error_type = "azure_api",
+                error_type = ClassifyError(ex.Status, ex.Message),
                 http_status = ex.Status,
                 error_code = ex.ErrorCode,
                 message = ex.Message,
@@ -175,7 +175,7 @@ public sealed class ExecutorTools
                     return JsonSerializer.Serialize(new
                     {
                         needs_replan = true,
-                        error_type = ClassifyError(result.HttpStatus),
+                        error_type = ClassifyError(result.HttpStatus, result.ErrorMessage),
                         http_status = result.HttpStatus,
                         message = result.ErrorMessage,
                         resource_id,
@@ -191,7 +191,7 @@ public sealed class ExecutorTools
             return JsonSerializer.Serialize(new
             {
                 needs_replan = true,
-                error_type = "azure_api",
+                error_type = ClassifyError(ex.Status, ex.Message),
                 http_status = ex.Status,
                 error_code = ex.ErrorCode,
                 message = ex.Message,
@@ -278,14 +278,22 @@ public sealed class ExecutorTools
         return true;
     }
 
-    private static string ClassifyError(int? httpStatus) => httpStatus switch
+    private static string ClassifyError(int? httpStatus, string? message = null)
     {
-        400 => "validation",
-        404 => "not_found",
-        409 => "conflict",
-        422 => "validation",
-        _ => "azure_api"
-    };
+        if (!string.IsNullOrWhiteSpace(message) &&
+            message.Contains("quota", StringComparison.OrdinalIgnoreCase))
+            return "quota";
+
+        return httpStatus switch
+        {
+            400 => "validation",
+            401 or 403 => "authorization",
+            404 => "not_found",
+            409 => "conflict",
+            422 => "validation",
+            _ => "azure_api"
+        };
+    }
 
     private string NormalizeSubscriptionInResourceId(string resourceId)
     {

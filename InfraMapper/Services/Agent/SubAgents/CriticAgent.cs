@@ -43,12 +43,12 @@ public sealed class CriticAgent
         When asked to critique a plan, follow this process:
 
         1. Call get_plan_details to retrieve the full plan. It returns:
-           { title, risk_level, operations: [{ action, resource_type, resource_name, resource_group, details }] }
+           { title, risk_level, operations: [{ action, resource_type, resource_name, resource_group, details }],
+             template_json, parameters_json, resource_group_name, location, deployment_name }
 
-           IMPORTANT: Operations are high-level descriptors, NOT ARM templates.
-           The ARM template is constructed by the Executor at deploy time.
-           Validate based on resource_type, resource_name, resource_group, and the details field.
-           Do NOT reject a plan for lacking ARM template JSON — that is expected and correct.
+           IMPORTANT: Operations are human-review descriptors. template_json is the deployable
+           artifact. Executor deploys template_json exactly; it does not construct ARM resources
+           from operations. For non-delete plans, reject missing or incomplete template_json.
 
         2. Assess the plan type:
 
@@ -60,6 +60,20 @@ public sealed class CriticAgent
 
            CREATE/UPDATE/DEPLOY PLAN (any operation is not Delete):
            Evaluate against ALL of these criteria:
+
+           TEMPLATE CORRECTNESS
+           • template_json must be valid ARM template JSON with $schema/contentVersion/resources.
+           • Every Create/Update/Deploy operation must correspond to a resource in template_json.
+           • Every resource in template_json must have a matching human-review operation unless it
+             is a nested deployment wrapper.
+           • Required Azure properties must be present. Examples:
+             - Microsoft.Network/virtualNetworks: addressSpace.addressPrefixes.
+             - Microsoft.Network/virtualNetworks/subnets: name must be "vnetName/subnetName" and
+               properties.addressPrefix or addressPrefixes must be present.
+             - Subnet NSG association must use properties.networkSecurityGroup.id.
+             - Microsoft.Network/networkSecurityGroups securityRules must include requested rules.
+             - Microsoft.Storage/storageAccounts must include sku, kind, TLS 1.2, HTTPS-only, and
+               public access settings.
 
            NAMING RULES
            • Storage accounts: 3–24 chars, lowercase letters and numbers only, globally unique.
