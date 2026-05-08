@@ -11,9 +11,7 @@ public sealed class PlanStore
         string SessionId,
         PlanStatus Status,
         JsonElement PlanData,
-        DateTimeOffset ExpiresAt,
-        string? CriticVerdict = null,
-        int RevisionCount = 0);
+        DateTimeOffset ExpiresAt);
 
     private readonly ConcurrentDictionary<Guid, PlanRecord> _plans = new();
 
@@ -46,16 +44,6 @@ public sealed class PlanStore
         _plans[planId] = r with { Status = PlanStatus.Rejected };
         return true;
     }
-
-    public bool TrySetCriticVerdict(Guid planId, bool approved, string feedback, int revisionCount)
-    {
-        if (!_plans.TryGetValue(planId, out var r)) return false;
-        _plans[planId] = r with { CriticVerdict = feedback, RevisionCount = revisionCount };
-        return true;
-    }
-
-    public (string? verdict, int revisionCount) GetCriticInfo(Guid planId) =>
-        _plans.TryGetValue(planId, out var r) ? (r.CriticVerdict, r.RevisionCount) : (null, 0);
 
     public JsonElement? GetPlanData(Guid planId) =>
         _plans.TryGetValue(planId, out var r) && r.ExpiresAt > DateTimeOffset.UtcNow

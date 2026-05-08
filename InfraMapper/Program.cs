@@ -5,10 +5,7 @@ using Azure.Core;
 using Azure.ResourceManager;
 using InfraMapper.Services;
 using InfraMapper.Services.Agent;
-using InfraMapper.Services.Agent.Memory;
 using InfraMapper.Services.Agent.Runtime;
-using InfraMapper.Services.Agent.SubAgents;
-using Microsoft.SemanticKernel;
 
 Env.TraversePath().Load();
 
@@ -52,16 +49,8 @@ builder.Services.AddControllers()
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddSingleton<PlanStore>();
-builder.Services.AddSingleton<QuestionStore>();
-builder.Services.AddSingleton<ILessonsStore, JsonFileLessonsStore>();
 builder.Services.AddSingleton<SkAgentRunner>();
 builder.Services.AddSingleton<SkAgentFactory>();
-builder.Services.AddSingleton<InvestigatorAgent>();
-builder.Services.AddSingleton<PlannerAgent>();
-builder.Services.AddSingleton<CriticAgent>();
-builder.Services.AddSingleton<QuestionerAgent>();
-builder.Services.AddSingleton<ExecutorAgent>();
-builder.Services.AddSingleton<ReflectorAgent>();
 builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<AgentService>();
 builder.Services.AddHostedService<SessionEvictionService>();

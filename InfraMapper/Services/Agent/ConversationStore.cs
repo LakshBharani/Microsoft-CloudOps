@@ -1,8 +1,5 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
 using InfraMapper.Services.Agent.Runtime;
-using InfraMapper.Services.Agent.State;
-using InfraMapper.Services.Agent.SubAgents;
 using InfraMapper.Services.Agent.Tools;
 using Microsoft.SemanticKernel.Agents;
 
@@ -10,69 +7,16 @@ namespace InfraMapper.Services.Agent;
 
 public sealed class ConversationStore
 {
-    public sealed record SessionEntry(
-        ChatCompletionAgent Agent,
-        OrchestratorPlugin Orchestrator,
-        ExecutorTools ExecutorTools,
-        SkAgentSession Session,
-        AgentTaskState TaskState,
-        PlannerTools PlannerTools,
-        DateTimeOffset LastAccessed);
+    public sealed record SessionEntry(ChatCompletionAgent Agent, SkAgentSession Session, DateTimeOffset LastAccessed);
 
     private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new();
-
-    // Service deps needed to build OrchestratorTools per session.
-    private readonly AzureResourceService _resourceService;
-    private readonly IArmDeploymentService _deploymentService;
-    private readonly IApprovalService _approvalService;
-    private readonly IResourceMutationApprovalService _mutationApprovals;
-    private readonly IArmGenericResourceService _genericResources;
-    private readonly PlanStore _planStore;
-    private readonly QuestionStore _questionStore;
     private readonly SkAgentFactory _agentFactory;
-    private readonly SkAgentRunner _runner;
-    private readonly InvestigatorAgent _investigatorAgent;
-    private readonly PlannerAgent _plannerAgent;
-    private readonly CriticAgent _criticAgent;
-    private readonly QuestionerAgent _questionerAgent;
-    private readonly ExecutorAgent _executorAgent;
-    private readonly ReflectorAgent _reflectorAgent;
-    private readonly ILoggerFactory _loggerFactory;
+    private readonly IServiceProvider _services;
 
-    public ConversationStore(
-        AzureResourceService resourceService,
-        IArmDeploymentService deploymentService,
-        IApprovalService approvalService,
-        IResourceMutationApprovalService mutationApprovals,
-        IArmGenericResourceService genericResources,
-        PlanStore planStore,
-        QuestionStore questionStore,
-        SkAgentFactory agentFactory,
-        SkAgentRunner runner,
-        InvestigatorAgent investigatorAgent,
-        PlannerAgent plannerAgent,
-        CriticAgent criticAgent,
-        QuestionerAgent questionerAgent,
-        ExecutorAgent executorAgent,
-        ReflectorAgent reflectorAgent,
-        ILoggerFactory loggerFactory)
+    public ConversationStore(SkAgentFactory agentFactory, IServiceProvider services)
     {
-        _resourceService = resourceService;
-        _deploymentService = deploymentService;
-        _approvalService = approvalService;
-        _mutationApprovals = mutationApprovals;
-        _genericResources = genericResources;
-        _planStore = planStore;
-        _questionStore = questionStore;
         _agentFactory = agentFactory;
-        _runner = runner;
-        _investigatorAgent = investigatorAgent;
-        _plannerAgent = plannerAgent;
-        _criticAgent = criticAgent;
-        _questionerAgent = questionerAgent;
-        _executorAgent = executorAgent;
-        _reflectorAgent = reflectorAgent;
-        _loggerFactory = loggerFactory;
+        _services = services;
     }
 
     public Task<SessionEntry> GetOrCreateAsync(string sessionId, string subscriptionId, CancellationToken ct = default)
@@ -84,285 +28,56 @@ public sealed class ConversationStore
             return Task.FromResult(refreshed);
         }
 
-        var orcTools = new OrchestratorTools(
-            _resourceService, _deploymentService, _approvalService,
-            _mutationApprovals, _genericResources, _planStore,
-            sessionId, _loggerFactory.CreateLogger<OrchestratorTools>());
-
-        var orchestratorQuestioner = _questionerAgent.BuildForSession(sessionId, "orchestrator");
-        var investigatorQuestioner = _questionerAgent.BuildForSession(sessionId, "investigator");
-        var plannerQuestioner = _questionerAgent.BuildForSession(sessionId, "planner");
-        var criticQuestioner = _questionerAgent.BuildForSession(sessionId, "critic");
-        var executorQuestioner = _questionerAgent.BuildForSession(sessionId, "executor");
-        var reflectorQuestioner = _questionerAgent.BuildForSession(sessionId, "reflector");
-
-        var investigator = _investigatorAgent.Build(new OrchestratorPluginClarifier(_runner, investigatorQuestioner, "investigator"));
-        var (planner, plannerTools) = _plannerAgent.BuildForSession(sessionId, new OrchestratorPluginClarifier(_runner, plannerQuestioner, "planner"));
-        var critic = _criticAgent.BuildForSession(clarificationPlugin: new OrchestratorPluginClarifier(_runner, criticQuestioner, "critic"));
-        var executorTools = new ExecutorTools(
-            _deploymentService, _approvalService, _mutationApprovals,
-            _genericResources, _planStore, sessionId, subscriptionId);
-        var executor = _executorAgent.BuildForSession(sessionId, subscriptionId, new OrchestratorPluginClarifier(_runner, executorQuestioner, "executor"));
-        var reflector = _reflectorAgent.Build(new OrchestratorPluginClarifier(_runner, reflectorQuestioner, "reflector"));
-
-        var orchestratorPlugin = new OrchestratorPlugin(
-            _runner,
-            investigator,
-            planner,
-            plannerTools,
-            critic,
-            orchestratorQuestioner,
-            executor,
-            reflector,
-            _planStore,
-            _questionStore,
-            sessionId);
-
+        var tools = ActivatorUtilities.CreateInstance<AzureCrudTools>(_services, sessionId, subscriptionId);
         var agent = _agentFactory.Create(
-            "orchestrator",
+            "infra_agent",
             BuildSystemPrompt(subscriptionId),
-            (orchestratorPlugin, "orchestrator"),
-            (orcTools, "azure"));
+            (tools, "azure"));
 
-        var session = new SkAgentSession();
-        var taskState = new AgentTaskState { SessionId = sessionId };
-        var entry = new SessionEntry(agent, orchestratorPlugin, executorTools, session, taskState, plannerTools, DateTimeOffset.UtcNow);
-
-        // Use AddOrUpdate to handle the rare case of concurrent first requests.
-        var stored = _sessions.AddOrUpdate(sessionId, entry, (_, existing2) =>
-        {
-            // Another thread won the race; keep theirs but update accessed time.
-            return existing2 with { LastAccessed = DateTimeOffset.UtcNow };
-        });
-
+        var entry = new SessionEntry(agent, new SkAgentSession(), DateTimeOffset.UtcNow);
+        var stored = _sessions.AddOrUpdate(sessionId, entry, (_, current) => current with { LastAccessed = DateTimeOffset.UtcNow });
         return Task.FromResult(stored);
     }
 
-    public void SetPendingApproval(string sessionId, Guid planId)
+    public void Evict(TimeSpan olderThan)
     {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
-        entry.Session.SetValue(
-            "pending_approval",
-            $"The plan with id {planId} has been approved by the user. Call execute_plan with plan_id \"{planId}\" now, then call reflect_on_deployment after execution completes.");
+        var cutoff = DateTimeOffset.UtcNow - olderThan;
+        foreach (var kv in _sessions)
+            if (kv.Value.LastAccessed < cutoff)
+                _sessions.TryRemove(kv.Key, out _);
     }
 
-    public string? ConsumePendingApproval(string sessionId)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return null;
-        lock (entry.Session)
-        {
-            if (!entry.Session.TryGetValue<string>("pending_approval", out var msg)) return null;
-            entry.Session.TryRemoveValue("pending_approval");
-            return msg;
-        }
-    }
+    private static string BuildSystemPrompt(string subscriptionId) =>
+        $$"""
+        You are InfraMapper, a single Azure infrastructure agent for a prototype demo.
 
-    public void SetPendingQuestionAnswer(string sessionId, Guid questionId, string answer)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
-        lock (entry.Session)
-        {
-            entry.Session.TryGetValue<string>("pending_question_answer", out var existing);
-            var answerContext = _questionStore.GetAnswerContext(questionId);
-            var next = answerContext is null
-                ? $"The user answered clarification question {questionId}: {answer}."
-                : BuildClarificationResumeMessage(answerContext);
-            entry.Session.SetValue(
-                "pending_question_answer",
-                string.IsNullOrWhiteSpace(existing)
-                    ? $"{next} Continue planning with this answer. If the answer changes plan constraints, call plan_deployment again and critique the revised plan before presenting it."
-                    : $"{existing}\n{next}");
-        }
-    }
+        Goal:
+        - Read the user's InfraIntentSpec JSON.
+        - Inspect Azure before planning.
+        - Create a concrete plan.
+        - Execute the plan immediately.
+        - Verify the deployment/resource result.
+        - Stop after success or a clear bounded failure.
 
-    private static string BuildClarificationResumeMessage(ClarifyingQuestionAnswerContext answer)
-    {
-        var payload = JsonSerializer.Serialize(new
-        {
-            question_id = answer.QuestionId,
-            originating_agent = answer.OriginatingAgent,
-            title = answer.Title,
-            prompt = answer.Prompt,
-            selected_value = answer.SelectedValue,
-            selected_label = answer.SelectedLabel,
-            selected_description = answer.SelectedDescription,
-            default_value = answer.DefaultValue,
-            category = answer.Category,
-            confirmation_scope = answer.ConfirmationScope,
-            is_scope_confirmation = answer.IsScopeConfirmation,
-            answered_at = answer.AnsweredAt
-        }, OrchestratorTools.SnakeCaseOpts);
+        Default subscription_id: {{subscriptionId}}
 
-        return $"""
-            The user answered a structured clarification questionnaire.
-            Clarification answer context:
-            {payload}
-            Treat this answer as first-class plan context. If is_scope_confirmation is true,
-            it confirms the matching destructive scope for the current plan unless the plan expands scope.
-            Before asking another requires_user_choice question, compare the requested choice against
-            this existing clarification context.
-            """;
-    }
+        Required workflow:
+        1. Call list_resources or find_resource for the target resource group/resources.
+        2. Call create_plan with operations and deployable template_json or CRUD details.
+        3. After create_plan returns, do not wait for user approval. This prototype auto-approves plans.
+        4. For multi-resource create/update, call deploy_arm_template.
+        5. For one generic resource change, call create_or_update_resource or delete_resource.
+        6. Call get_deployment_status or get_resource to verify.
+        7. Reply with concise success/failure and exact Azure error if failed.
 
-    public string? ConsumePendingQuestionAnswer(string sessionId)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return null;
-        lock (entry.Session)
-        {
-            if (!entry.Session.TryGetValue<string>("pending_question_answer", out var msg)) return null;
-            entry.Session.TryRemoveValue("pending_question_answer");
-            return msg;
-        }
-    }
+        JSON contract:
+        - Existing InfraIntentSpec is expected: schemaVersion, intent, scope, components, constraints.
+        - Supported shortcut components: storageAccount, webApp.
+        - Supported generic component: genericResource with type, apiVersion, name, location, properties, optional sku, kindValue, tags.
 
-    public AgentTaskState? GetTaskState(string sessionId) =>
-        _sessions.TryGetValue(sessionId, out var entry) ? entry.TaskState : null;
-
-    public void IngestIntent(string sessionId, string subscriptionId, string userMessage)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
-        var parsed = IntentParser.Parse(userMessage, subscriptionId);
-        Console.WriteLine($"[ConversationStore] ingest_intent session={sessionId} components={parsed.RequiredComponents.Count} json_extracted={!string.IsNullOrWhiteSpace(parsed.OriginalIntentJson)} rg={parsed.ResourceGroup}");
-        if (parsed.RequiredComponents.Count == 0 && string.IsNullOrWhiteSpace(parsed.OriginalIntentJson))
-            return;
-        entry.TaskState.Initialize(parsed, subscriptionId, userMessage);
-        entry.PlannerTools.SyncWithTaskState(entry.TaskState);
-    }
-
-    public void RecordAnswer(string sessionId, ClarificationAnswerSnapshot answer)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
-        entry.TaskState.AddAnswer(answer);
-    }
-
-    public void RecordFailure(string sessionId, ExecutionFailureSnapshot failure)
-    {
-        if (!_sessions.TryGetValue(sessionId, out var entry)) return;
-        entry.TaskState.AddFailure(failure);
-    }
-
-    public void Remove(string sessionId) => _sessions.TryRemove(sessionId, out _);
-
-    public void Evict(TimeSpan maxIdle)
-    {
-        var cutoff = DateTimeOffset.UtcNow - maxIdle;
-        foreach (var key in _sessions.Keys)
-            if (_sessions.TryGetValue(key, out var entry) && entry.LastAccessed < cutoff)
-                _sessions.TryRemove(key, out _);
-    }
-
-    private static string BuildSystemPrompt(string subscriptionId) => $"""
-        You are InfraMapper Agent, an AI assistant that manages Azure infrastructure.
-
-        The user's Azure subscription ID is: {subscriptionId}
-        Use this subscription ID for all operations unless the user explicitly specifies a different one.
-        Do NOT ask the user for their subscription ID.
-
-        Rules:
-        - INVESTIGATE: call investigate_infrastructure(focus, subscription_id?) freely before planning.
-          The Investigator discovers existing resources and returns a focused summary.
-        - PLAN: call plan_deployment to turn user intent into a complete plan. For create/update/deploy
-          work, Planner must produce the deployable ARM template in template_json; Executor deploys
-          that approved template and should not infer resource-specific ARM properties from prose.
-        - CHECK STATUS: call get_deployment_status for deployment status checks.
-        - ASK: call ask_clarifying_question only when planning is blocked by ambiguity,
-          planner needs a preference, or critic feedback requires a human choice.
-          Do not ask for discoverable Azure facts; use investigate_infrastructure first.
-          Ask before plan_deployment if the user intent is missing a required deployment choice
-          (for example SKU/tier, destructive scope, region when not inferable, or mutually exclusive architecture).
-          Ask after critique_plan only when the critic's feedback cannot be resolved safely without user intent.
-
-        ── QUESTIONNAIRE PROTOCOL ──────────────────────────────────────────────
-        All user-facing questions MUST be created with ask_clarifying_question so the UI
-        renders a questionnaire. Do NOT ask questions in plain prose. If your response
-        would ask the user to confirm, choose, provide exclusions, explain business intent,
-        or answer anything else before work can continue, call ask_clarifying_question
-        instead of replying with the question text.
-        All sub-agents also have access to ask_clarifying_question. If a sub-agent returns
-        question JSON or emits a questionnaire, STOP and wait for the user's answer before
-        continuing the current plan/execution path.
-
-        Broad destructive requests require a questionnaire before planning unless the user
-        already gave explicit scope, exclusions, and confirmation. Examples include:
-        delete all resource groups, delete a subscription's resources, delete production
-        workloads, or any request whose scope may remove many resources.
-        Structured clarification answers are first-class context. Scope-level confirmation
-        applies to every matching destructive operation in the current plan unless a later
-        plan expands the destructive scope. Do not ask for per-resource typed confirmation
-        when an existing scope-level answer already covers that operation.
-
-        ── BLAST RADIUS ASSESSMENT ──────────────────────────────────────────────
-        Before acting on any mutating request, assess blast radius:
-
-          LOW — single resource, non-cascading, easily reversible.
-                Examples: update a tag, change a SKU on a non-prod resource,
-                          delete a single named resource (not a resource group).
-
-          MEDIUM — new single resource creation, or delete of a single named resource
-                   where the scope is clear and contained.
-
-          HIGH — anything that could affect many resources or is hard to reverse:
-                 delete a resource group, deploy an ARM template, create/modify
-                 networking (VNets, NSGs), modify production workloads, multi-resource ops.
-
-        ── APPROVAL PROTOCOL (READ THIS CAREFULLY) ──────────────────────────────
-        Plans require explicit human approval before execution. The UI shows an Approve button.
-
-        PHASE A — PLANNING (current turn):
-          After you produce a plan (and critique it if HIGH), you MUST:
-          • Output a concise summary of the plan to the user.
-          • STOP. Do NOT call execute_plan. Do NOT call any write tools.
-          • The user will click Approve in the UI, then send a follow-up message.
-
-        PHASE B — EXECUTION (next turn, triggered by approval signal):
-          You will receive a message containing:
-            "The plan with id <plan_id> has been approved by the user. Call execute_plan with plan_id \"<plan_id>\" now, then call reflect_on_deployment after execution completes."
-          This is your ONLY signal to call execute_plan. Do not call execute_plan without it.
-          If execute_plan returns error_type:"plan_not_approved", do NOT retry —
-          the user has not approved yet; tell them to click the Approve button.
-          If execute_plan fails, do NOT finish with "done". Send the exact failure context back
-          through investigation + planning, produce a revised plan, wait for approval, and retry
-          after approval. Repeat this recovery loop until execution succeeds or the user stops it.
-
-        ── EXECUTION PATHS BY BLAST RADIUS ─────────────────────────────────────
-
-          LOW path:
-          PHASE A: Call plan_deployment(intent). Output plan summary. STOP.
-          PHASE B: On approval signal → call execute_plan(plan_id) → call reflect_on_deployment.
-
-          MEDIUM path:
-          PHASE A: Call plan_deployment(intent, investigator_summary?). Output plan summary. STOP.
-          PHASE B: On approval signal → call execute_plan(plan_id).
-                   If needs_replan:true, investigate current state, call plan_deployment for a revised plan,
-                   wait for approval, then execute again. Repeat on each failure.
-                   Call reflect_on_deployment.
-
-          HIGH path:
-          PHASE A:
-          1. If intent needs confirmation, scope, exclusions, or a business reason, call
-             ask_clarifying_question. STOP until the user answers through the questionnaire.
-          2. Optionally call investigate_infrastructure if context is needed.
-          3. Call plan_deployment(intent, investigator_summary?). Include any structured
-             clarification answer context in the intent so Planner documents confirmation evidence.
-          4. Call critique_plan(plan_id).
-             If approved:false, call plan_deployment again with feedback. Repeat until approved
-             or until a human clarification is needed.
-             If feedback includes requires_user_choice, first compare it with existing structured
-             clarification context. If already covered, re-plan/re-critique with the documented
-             confirmation evidence. If not covered and a user choice can unblock the plan, call
-             ask_clarifying_question; otherwise output the rejection reason.
-          5. Once approved:true, output a concise plan summary. STOP.
-          PHASE B: On approval signal → call execute_plan(plan_id).
-                   If needs_replan:true, investigate current state, re-plan, critique, wait for approval,
-                   then execute again. Repeat on each failure.
-                   Call reflect_on_deployment.
-
-        General rules:
-        - Be concise. After completing an operation, give a brief summary of what was done.
-
-        Formatting rules:
-        - Do NOT use emojis.
-        - When writing a markdown table, always put a blank line before and after it, and put each row on its own line.
-        - Use bullet points or numbered lists rather than inline-concatenated items.
+        Safety:
+        - Maximum two execution attempts for the same failed operation.
+        - Stop on authorization, quota, invalid template, missing required field, or repeated same error.
+        - No lessons, critique, reflection, sub-agents, or self-healing loops.
         """;
 }

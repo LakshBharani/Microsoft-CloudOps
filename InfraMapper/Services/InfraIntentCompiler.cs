@@ -63,6 +63,9 @@ public sealed class InfraIntentCompiler
                 case "webapp":
                     AddWebApp(component, desired, nestedResources, operations, subscriptionId, resourceGroup, location, tags, warnings);
                     break;
+                case "genericresource":
+                    AddGenericResource(component, desired, nestedResources, operations, resourceGroup, location, tags);
+                    break;
                 default:
                     warnings.Add($"Unsupported component kind '{component.Kind}' was ignored.");
                     break;
@@ -75,7 +78,7 @@ public sealed class InfraIntentCompiler
             {
                 type = "Microsoft.Resources/resourceGroups",
                 apiVersion = "2022-09-01",
-                name = resourceGroup,
+                name = "[parameters('resourceGroupName')]",
                 location,
                 tags
             }
@@ -87,8 +90,8 @@ public sealed class InfraIntentCompiler
                 type = "Microsoft.Resources/deployments",
                 apiVersion = "2022-09-01",
                 name = $"deploy-{SanitizeDeploymentName(resourceGroup)}",
-                resourceGroup,
-                dependsOn = new[] { resourceGroup },
+                resourceGroup = "[parameters('resourceGroupName')]",
+                dependsOn = new[] { "[resourceId('Microsoft.Resources/resourceGroups', parameters('resourceGroupName'))]" },
                 properties = new
                 {
                     mode = "Incremental",
@@ -105,6 +108,14 @@ public sealed class InfraIntentCompiler
         {
             schema = "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
             contentVersion = "1.0.0.0",
+            parameters = new
+            {
+                resourceGroupName = new
+                {
+                    type = "string",
+                    defaultValue = resourceGroup
+                }
+            },
             resources = subscriptionResources.ToArray()
         };
 
@@ -220,6 +231,59 @@ public sealed class InfraIntentCompiler
             $"Agent-generated component for webApp {name}; SKU {skuName}."));
         operations.Add(new PlanOperationDto("Create", "Microsoft.Web/sites", name, resourceGroup,
             $"Agent-generated component: webApp; runtime {runtime}; private network intent must be enforced by follow-up networking component."));
+    }
+
+    private static void AddGenericResource(
+        InfraComponentSpec component,
+        DesiredStateSpec desired,
+        List<object> resources,
+        List<PlanOperationDto> operations,
+        string resourceGroup,
+        string defaultLocation,
+        Dictionary<string, string> inheritedTags)
+    {
+        var name = Required(component.Name, "genericResource.name");
+        var type = component.TryGetString("type", out var t) ? t : throw new InvalidOperationException("genericResource.type is required.");
+        var apiVersion = component.TryGetString("apiVersion", out var av) ? av : throw new InvalidOperationException("genericResource.apiVersion is required.");
+        var location = component.TryGetString("location", out var loc) ? loc : defaultLocation;
+        var kind = component.TryGetString("kindValue", out var kv) ? kv :
+            component.TryGetString("kind", out var k) ? k : null;
+
+        object? sku = null;
+        string? skuJson = null;
+        if (component.TryGetElementForCompiler("sku", out var skuEl))
+        {
+            skuJson = skuEl.GetRawText();
+            sku = JsonSerializer.Deserialize<JsonElement>(skuJson);
+        }
+
+        object properties = new { };
+        if (component.TryGetElementForCompiler("properties", out var propsEl))
+            properties = JsonSerializer.Deserialize<JsonElement>(propsEl.GetRawText());
+
+        var tags = new Dictionary<string, string>(inheritedTags, StringComparer.OrdinalIgnoreCase);
+        if (component.TryGetElementForCompiler("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var tag in tagsEl.EnumerateObject())
+                if (tag.Value.ValueKind == JsonValueKind.String)
+                    tags[tag.Name] = tag.Value.GetString() ?? "";
+        }
+
+        var resource = new Dictionary<string, object?>
+        {
+            ["type"] = type,
+            ["apiVersion"] = apiVersion,
+            ["name"] = name,
+            ["location"] = location,
+            ["tags"] = tags,
+            ["properties"] = properties
+        };
+        if (sku is not null) resource["sku"] = sku;
+        if (!string.IsNullOrWhiteSpace(kind)) resource["kind"] = kind;
+
+        resources.Add(resource);
+        AddDesired(desired, name, type, resourceGroup, location, tags, skuJson, kind);
+        operations.Add(new PlanOperationDto("Create", type, name, resourceGroup, "Agent-generated generic ARM resource."));
     }
 
     private static Dictionary<string, string> ReadTags(InfraIntentSpec spec)

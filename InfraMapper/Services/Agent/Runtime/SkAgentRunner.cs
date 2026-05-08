@@ -10,19 +10,7 @@ namespace InfraMapper.Services.Agent.Runtime;
 public sealed class SkAgentRunner
 {
     private const int DefaultTimeoutSeconds = 90;
-    private const int LongRunningAgentTimeoutSeconds = 120;
-    private const int HostingAgentTimeoutSeconds = 300;
-    private static readonly HashSet<string> LongRunningAgentNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "planner",
-        "investigator",
-        "critic"
-    };
-    private static readonly HashSet<string> HostingAgentNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "orchestrator",
-        "executor"
-    };
+    private const int InfraAgentTimeoutSeconds = 300;
 
     public async IAsyncEnumerable<AgentStreamEvent> RunStreamingAsync(
         ChatCompletionAgent agent,
@@ -153,14 +141,9 @@ public sealed class SkAgentRunner
         if (int.TryParse(Environment.GetEnvironmentVariable("AZURE_AI_TIMEOUT_SECONDS"), out var globalValue) && globalValue > 0)
             return TimeSpan.FromSeconds(globalValue);
 
-        var fallback = DefaultTimeoutSeconds;
-        if (!string.IsNullOrWhiteSpace(agentName))
-        {
-            if (HostingAgentNames.Contains(agentName))
-                fallback = HostingAgentTimeoutSeconds;
-            else if (LongRunningAgentNames.Contains(agentName))
-                fallback = LongRunningAgentTimeoutSeconds;
-        }
+        var fallback = string.Equals(agentName, "infra_agent", StringComparison.OrdinalIgnoreCase)
+            ? InfraAgentTimeoutSeconds
+            : DefaultTimeoutSeconds;
         return TimeSpan.FromSeconds(fallback);
     }
 
@@ -250,8 +233,6 @@ public sealed class SkAgentRunner
                             tr.Success ? "success" : "failed",
                             tr.Success ? $"{tr.ToolName} completed" : $"{tr.ToolName} failed",
                             Preview(tr.ResultJson), errorType, message);
-                        if (tr.Success && string.Equals(tr.ToolName, "ask_clarifying_question", StringComparison.OrdinalIgnoreCase))
-                            yield return tr;
                         break;
                     }
                 }
@@ -272,6 +253,10 @@ public sealed class SkAgentRunner
 
         private static (string? errorType, string? message) SummarizeToolResult(string json)
         {
+            if (AgentResultParser.TryParse(json, out var parsed) &&
+                (!string.IsNullOrWhiteSpace(parsed.ErrorType) || !string.IsNullOrWhiteSpace(parsed.Message)))
+                return (parsed.ErrorType, parsed.Message);
+
             try
             {
                 using var doc = JsonDocument.Parse(ExtractJsonObject(json));
@@ -286,33 +271,7 @@ public sealed class SkAgentRunner
 
         private static bool IsSuccessfulToolResult(string json)
         {
-            try
-            {
-                using var doc = JsonDocument.Parse(ExtractJsonObject(json));
-                var root = doc.RootElement;
-                if (root.ValueKind != JsonValueKind.Object) return true;
-
-                if (TryGetProperty(root, "success", out var successEl) && successEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                    return successEl.GetBoolean();
-                if (TryGetProperty(root, "succeeded", out var succeededEl) && succeededEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                    return succeededEl.GetBoolean();
-                if (TryGetProperty(root, "needs_replan", out var needsReplanEl) && needsReplanEl.ValueKind == JsonValueKind.True)
-                    return false;
-                if (TryGetProperty(root, "error_type", out var errorTypeEl) &&
-                    errorTypeEl.ValueKind == JsonValueKind.String &&
-                    !string.IsNullOrWhiteSpace(errorTypeEl.GetString()))
-                    return false;
-                if (TryGetProperty(root, "error", out var errorEl) && IsErrorValue(errorEl))
-                    return false;
-                if (TryGetStatusCode(root, out var statusCode) && statusCode >= 400)
-                    return false;
-
-                return true;
-            }
-            catch
-            {
-                return !json.Contains("\"error\":true", StringComparison.OrdinalIgnoreCase);
-            }
+            return AgentResultParser.IsSuccessfulToolResult(json);
         }
 
         private static bool IsErrorValue(JsonElement errorEl) => errorEl.ValueKind switch

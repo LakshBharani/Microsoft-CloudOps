@@ -44,6 +44,36 @@ function makeSession(n: number): Session {
   return { id: makeId(), name: `Session ${n}`, createdAt: Date.now() };
 }
 
+function summarizeIntentComponents(desiredJson?: string): string[] {
+  if (!desiredJson?.trim()) return [];
+
+  try {
+    const spec = JSON.parse(desiredJson) as {
+      scope?: { resourceGroup?: string };
+      components?: Array<{ kind?: string; name?: string; subnets?: Array<{ name?: string }> }>;
+    };
+
+    const lines: string[] = [];
+    if (spec.scope?.resourceGroup) {
+      lines.push(`- Microsoft.Resources/resourceGroups "${spec.scope.resourceGroup}"`);
+    }
+
+    for (const component of spec.components ?? []) {
+      if (!component?.kind || !component?.name) continue;
+      lines.push(`- ${component.kind} "${component.name}"`);
+      if (component.kind.toLowerCase() === "virtualnetwork") {
+        for (const subnet of component.subnets ?? []) {
+          if (subnet?.name) lines.push(`- subnet "${subnet.name}"`);
+        }
+      }
+    }
+
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
 export default function Home() {
   const [subscriptionId, setSubscriptionId] = useState(DEFAULT_SUB);
   const [graph, setGraph] = useState<InfrastructureGraph | null>(null);
@@ -127,6 +157,14 @@ export default function Home() {
       lines.push(`- Update ${n.type} "${n.name}": ${changeDesc}`);
     });
     result.toDelete.forEach((n) => lines.push(`- Delete ${n.type} "${n.name}" (id: ${n.existingId})`));
+    const intentComponents = summarizeIntentComponents(desiredJson);
+    if (intentComponents.length > 0) {
+      lines.push("");
+      lines.push("FINAL SCOPE CHECK — authoritative JSON wins over the computed diff.");
+      lines.push("The plan and ARM template MUST include every item below. If a listed item is absent from the diff, still include it:");
+      lines.push(...intentComponents);
+      lines.push("Do not end with a plan that only contains the computed diff resources.");
+    }
     const prompt = lines.join("\n");
 
     setShowDiff(false);

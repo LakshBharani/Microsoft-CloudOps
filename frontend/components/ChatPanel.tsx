@@ -24,31 +24,22 @@ interface Props {
 }
 
 const TOOL_LABELS: Record<string, string> = {
-  get_infrastructure_graph: "Reading infrastructure graph",
+  list_resource_groups: "Listing resource groups",
+  list_resources: "Listing resources",
   get_resource: "Reading resource",
+  find_resource: "Finding resource",
   get_deployment_status: "Checking deployment status",
   create_plan: "Creating plan",
+  create_or_update_resource: "Creating or updating resource",
+  delete_resource: "Deleting resource",
   deploy_arm_template: "Deploying ARM template",
-  apply_resource_mutation: "Applying resource mutation",
-  investigate_infrastructure: "Investigating infrastructure",
-  plan_deployment: "Planning deployment",
-  critique_plan: "Critiquing plan",
-  ask_clarifying_question: "Asking clarification",
-  execute_plan: "Executing plan",
-  reflect_on_deployment: "Reflecting on deployment",
-  get_lessons: "Referencing lessons learned",
 };
 
 const AGENT_LABELS: Record<string, string> = {
-  investigate_infrastructure: "Investigator",
-  plan_deployment: "Planner",
-  critique_plan: "Critic",
-  ask_clarifying_question: "Questioner",
-  execute_plan: "Executor",
-  reflect_on_deployment: "Reflector",
+  infra_agent: "InfraMapper Agent",
 };
 
-const ORCHESTRATOR_MODEL = "o4-mini";
+const INFRA_AGENT_MODEL = "gpt-5.1";
 
 function formatModelName(model?: string) {
   return model?.replace(/^gpt-/, "gpt ").replace(/-/g, " ");
@@ -150,7 +141,7 @@ function ActivityTimeline({ activities, defaultOpen = true }: { activities?: Age
       >
         {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
         <Cpu size={10} className="text-blue-400" />
-        <span>Agents at work — {activities.length} event{activities.length === 1 ? "" : "s"}</span>
+        <span>Agent at work — {activities.length} event{activities.length === 1 ? "" : "s"}</span>
       </button>
       {open && (
         <div className="space-y-1 border-t border-slate-800 px-2 py-2">
@@ -217,8 +208,8 @@ function AgentMessage({
       ? [{
           id: "stream-starting",
           kind: "agent" as const,
-          agent: "orchestrator",
-          model: ORCHESTRATOR_MODEL,
+          agent: "infra_agent",
+          model: INFRA_AGENT_MODEL,
           status: "running" as const,
           summary: "Waiting for agent activity",
           message: "Starting work...",
@@ -230,7 +221,7 @@ function AgentMessage({
       <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-300">
         <Bot size={11} />
         <span>InfraMapper Agent</span>
-        <span className="normal-case tracking-normal text-slate-500">· {formatModelName(ORCHESTRATOR_MODEL)}</span>
+        <span className="normal-case tracking-normal text-slate-500">· {formatModelName(INFRA_AGENT_MODEL)}</span>
         {workedDuration && (
           <span className="ml-auto normal-case tracking-normal text-slate-500">Worked for {workedDuration}</span>
         )}
@@ -448,8 +439,8 @@ export default function ChatPanel({
         : [{
             id: "agent-response",
             kind: "agent" as const,
-            agent: "orchestrator",
-            model: ORCHESTRATOR_MODEL,
+            agent: "infra_agent",
+            model: INFRA_AGENT_MODEL,
             status,
             summary: status === "failed" ? "Agent response failed" : "Agent response completed",
             message: status === "failed" ? content : "Response received",
@@ -810,7 +801,7 @@ export default function ChatPanel({
       <div className="flex flex-shrink-0 items-center gap-2 border-b border-slate-700 px-4 py-2">
         <Bot size={14} className="text-blue-400" />
         <span className="text-xs font-semibold text-slate-300">InfraMapper Agent</span>
-        <span className="text-[10px] text-slate-500">· {formatModelName(ORCHESTRATOR_MODEL)}</span>
+        <span className="text-[10px] text-slate-500">· {formatModelName(INFRA_AGENT_MODEL)}</span>
         {(tokenUsage.input > 0) && (
           <span className="ml-auto text-[10px] text-slate-600 font-mono">
             {tokenUsage.input.toLocaleString()} / 200k tokens

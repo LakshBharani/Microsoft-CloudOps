@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using InfraMapper.Services.Agent.Tools;
 
 namespace InfraMapper.Services.Agent.Runtime;
 
@@ -9,34 +8,11 @@ public sealed class SseEventTranslator
 {
     private readonly string _sessionId;
     private readonly PlanStore _planStore;
-    private readonly QuestionStore _questionStore;
-    private readonly bool _autoApprovePlan;
 
-    public static readonly HashSet<string> SubAgentToolNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "investigate_infrastructure",
-        "plan_deployment",
-        "critique_plan",
-        "ask_clarifying_question",
-        "execute_plan",
-        "reflect_on_deployment",
-    };
-
-    // Tracks iteration counts per sub-agent tool across one streaming run.
-    private readonly Dictionary<string, int> _subAgentIterations = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, (string agentName, int iteration)> _pendingSubAgentCalls = new();
-
-    // Phase 3: plan event buffering for silent retry UX.
-    private string? _bufferedPlanResultJson;  // raw result JSON from plan_deployment; null until buffered
-    private int _planRevisionCount;           // incremented each time Critic rejects
-    private readonly HashSet<string> _emittedQuestionIds = new(StringComparer.OrdinalIgnoreCase);
-
-    public SseEventTranslator(string sessionId, PlanStore planStore, QuestionStore questionStore, bool autoApprovePlan)
+    public SseEventTranslator(string sessionId, PlanStore planStore)
     {
         _sessionId = sessionId;
         _planStore = planStore;
-        _questionStore = questionStore;
-        _autoApprovePlan = autoApprovePlan;
     }
 
     public async IAsyncEnumerable<string> TranslateAsync(
@@ -44,110 +20,52 @@ public sealed class SseEventTranslator
         [EnumeratorCancellation] CancellationToken ct)
     {
         var textBuilder = new StringBuilder();
-        long totalInput = 0, totalOutput = 0;
-        string? errorMessage = null;
+        long totalInput = 0;
+        long totalOutput = 0;
 
         await foreach (var evt in stream.WithCancellation(ct))
         {
             switch (evt)
             {
                 case AgentStreamEvent.ToolCall tc:
-                {
-                    var toolName = tc.ToolName;
-                    var callId   = tc.CallId;
-
-                    yield return Evt("tool_call", new { tool = toolName, session_id = _sessionId });
+                    yield return Evt("tool_call", new { tool = tc.ToolName, session_id = _sessionId });
                     yield return Evt("activity_start", new
                     {
-                        id = callId ?? toolName,
+                        id = tc.CallId ?? tc.ToolName,
                         parent_id = (string?)null,
-                        kind = SubAgentToolNames.Contains(toolName) ? "agent" : "tool",
-                        agent = SubAgentToolNames.Contains(toolName) ? toolName : null,
-                        tool = SubAgentToolNames.Contains(toolName) ? null : toolName,
-                        model = SubAgentToolNames.Contains(toolName) ? AgentRegistry.GetModel(ToolNameToAgentName(toolName)) : null,
+                        kind = "tool",
+                        agent = (string?)null,
+                        tool = tc.ToolName,
+                        model = (string?)null,
                         status = "running",
-                        summary = ActivityStartSummary(toolName),
+                        summary = $"Calling {tc.ToolName}",
                         session_id = _sessionId
                     });
-
-                    if (SubAgentToolNames.Contains(toolName))
-                    {
-                        _subAgentIterations.TryGetValue(toolName, out var prev);
-                        var iter = prev + 1;
-                        _subAgentIterations[toolName] = iter;
-
-                        if (callId is not null)
-                            _pendingSubAgentCalls[callId] = (toolName, iter);
-
-                        var model = AgentRegistry.GetModel(ToolNameToAgentName(toolName));
-                        yield return Evt("agent_call", new
-                        {
-                            agent      = toolName,
-                            model,
-                            iteration  = iter,
-                            parent_tool_call_id = callId,
-                            session_id = _sessionId
-                        });
-                    }
                     break;
-                }
 
                 case AgentStreamEvent.ToolResult tr:
-                {
-                    var toolName  = tr.ToolName;
-                    var callId    = tr.CallId;
-                    var resultStr = tr.ResultJson;
-                    var isError   = !tr.Success;
-
-                    yield return Evt("tool_result", new { tool = toolName, success = tr.Success, session_id = _sessionId });
-                    var (errorType, message) = SummarizeResult(resultStr);
+                    yield return Evt("tool_result", new { tool = tr.ToolName, success = tr.Success, session_id = _sessionId });
+                    var (errorType, message) = SummarizeResult(tr.ResultJson);
                     yield return Evt("activity_end", new
                     {
-                        id = callId ?? toolName,
-                        kind = SubAgentToolNames.Contains(toolName) ? "agent" : "tool",
-                        agent = SubAgentToolNames.Contains(toolName) ? toolName : null,
-                        tool = SubAgentToolNames.Contains(toolName) ? null : toolName,
+                        id = tr.CallId ?? tr.ToolName,
+                        kind = "tool",
+                        agent = (string?)null,
+                        tool = tr.ToolName,
                         status = tr.Success ? "success" : "failed",
-                        summary = tr.Success ? ActivityEndSummary(toolName) : $"{ToolDisplayName(toolName)} failed",
-                        detail_preview = Preview(resultStr),
+                        summary = tr.Success ? $"{tr.ToolName} completed" : $"{tr.ToolName} failed",
+                        detail_preview = Preview(tr.ResultJson),
                         error_type = errorType,
                         message,
                         session_id = _sessionId
                     });
 
-                    if (callId is not null && _pendingSubAgentCalls.TryGetValue(callId, out var pending))
+                    if (string.Equals(tr.ToolName, "create_plan", StringComparison.OrdinalIgnoreCase) && tr.Success)
                     {
-                        _pendingSubAgentCalls.Remove(callId);
-                    }
-
-                    if (IsQuestionResult(resultStr))
-                    {
-                        foreach (var e in BuildQuestionEvents(resultStr))
-                            yield return e;
-                        _bufferedPlanResultJson = null;
-                        break;
-                    }
-
-                    // Buffer plan events from plan_deployment (Phase 2) or create_plan (Phase 0/1 fallback).
-                    // The plan SSE event is held until the Critic approves or the stream ends.
-                    if ((toolName == "plan_deployment" || toolName == "create_plan") && !isError)
-                    {
-                        _bufferedPlanResultJson = resultStr;
-                    }
-
-                    // Phase 3: Critic result decides whether to emit or discard the buffered plan.
-                    if (toolName == "critique_plan" && !isError)
-                    {
-                        foreach (var e in HandleCritiqueResult(resultStr))
-                            yield return e;
-                    }
-                    if (toolName == "ask_clarifying_question" && !isError)
-                    {
-                        foreach (var e in BuildQuestionEvents(resultStr))
-                            yield return e;
+                        foreach (var planEvt in BuildPlanEvents(tr.ResultJson))
+                            yield return planEvt;
                     }
                     break;
-                }
 
                 case AgentStreamEvent.Activity a:
                     yield return Evt(a.Phase == "start" ? "activity_start" : "activity_end", new
@@ -168,7 +86,7 @@ public sealed class SseEventTranslator
                     break;
 
                 case AgentStreamEvent.Usage u:
-                    totalInput  += u.InputTokens;
+                    totalInput += u.InputTokens;
                     totalOutput += u.OutputTokens;
                     break;
 
@@ -177,423 +95,61 @@ public sealed class SseEventTranslator
                     break;
 
                 case AgentStreamEvent.Error e:
-                    errorMessage = e.Message;
-                    break;
+                    yield return Evt("error", new { message = e.Message, session_id = _sessionId });
+                    yield break;
             }
-        }
-
-        if (errorMessage is not null)
-        {
-            yield return Evt("error", new { message = errorMessage, session_id = _sessionId });
-            yield break;
-        }
-
-        // If a plan was buffered but never critiqued (Phase 0/1 compatibility or auto-approve path),
-        // emit it now at end of stream.
-        if (_bufferedPlanResultJson is not null && _emittedQuestionIds.Count == 0)
-        {
-            foreach (var evt in EmitBufferedPlan())
-                yield return evt;
         }
 
         if (totalInput > 0 || totalOutput > 0)
-            yield return Evt("usage", new
-            {
-                input_tokens  = (int)totalInput,
-                output_tokens = (int)totalOutput,
-                session_id    = _sessionId
-            });
+            yield return Evt("usage", new { input_tokens = (int)totalInput, output_tokens = (int)totalOutput, session_id = _sessionId });
 
         var text = textBuilder.ToString();
-        if (_emittedQuestionIds.Count == 0 && LooksLikePlainTextQuestion(text))
-        {
-            foreach (var evt in BuildPlainTextFallbackQuestion(text))
-                yield return evt;
-            text = "Please answer the clarification.";
-        }
-
-        yield return Evt("reply", new
-        {
-            content    = text.Length > 0 ? text : "Done.",
-            session_id = _sessionId
-        });
+        yield return Evt("reply", new { content = text.Length > 0 ? text : "Done.", session_id = _sessionId });
     }
 
-    // ─── Plan buffering helpers ──────────────────────────────────────────────
-
-    private IEnumerable<string> HandleCritiqueResult(string critiqueJson)
+    private IEnumerable<string> BuildPlanEvents(string resultJson)
     {
-        bool? approved = null;
-        string? feedback = null;
-        try
-        {
-            using var doc = JsonDocument.Parse(ExtractJsonObject(critiqueJson));
-            if (doc.RootElement.TryGetProperty("approved", out var approvedEl))
-                approved = approvedEl.GetBoolean();
-            if (doc.RootElement.TryGetProperty("feedback", out var feedbackEl))
-                feedback = feedbackEl.GetString();
-        }
-        catch { /* malformed — treat as approved to avoid blocking */ }
-
-        if (approved == false)
-        {
-            if (!IsBlockingCriticFeedback(feedback))
-            {
-                foreach (var evt in EmitBufferedPlan(criticFeedbackOverride: $"Critic warning: {feedback}"))
-                    yield return evt;
-                yield break;
-            }
-
-            // Critic found a blocking issue: discard the buffered plan. The activity stream
-            // still carries the critic result, but blocked plans should not be approvable.
-            _bufferedPlanResultJson = null;
-            _planRevisionCount++;
+        if (!AgentResultParser.TryParse(resultJson, out var parsed) ||
+            string.IsNullOrWhiteSpace(parsed.PlanId) ||
+            !Guid.TryParse(parsed.PlanId, out var planGuid))
             yield break;
-        }
 
-        // Critic approved (or result unparseable): emit the buffered plan.
-        foreach (var evt in EmitBufferedPlan())
-            yield return evt;
-    }
+        var planData = _planStore.GetPlanData(planGuid);
+        if (planData is null)
+            yield break;
 
-    private IEnumerable<string> EmitBufferedPlan(string? criticFeedbackOverride = null)
-    {
-        if (_bufferedPlanResultJson is null) yield break;
+        var root = planData.Value;
+        var ops = root.TryGetProperty("operations", out var opsEl)
+            ? JsonSerializer.Deserialize<object[]>(opsEl.GetRawText())
+            : Array.Empty<object>();
 
-        foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount, "pending", criticFeedbackOverride))
-            yield return evt;
-
-        _bufferedPlanResultJson = null;
-    }
-
-    private static bool IsBlockingCriticFeedback(string? feedback)
-    {
-        if (string.IsNullOrWhiteSpace(feedback)) return false;
-
-        string[] blockers =
+        yield return Evt("plan", new
         {
-            "missing template_json",
-            "missing_template_json",
-            "invalid_template_json",
-            "not valid JSON",
-            "policy violation",
-            "policy_violation",
-            "no-compute",
-            "disallowed",
-            "sku under properties",
-            "missing top-level sku",
-            "missing top-level resourceGroup",
-            "missing resourceGroup",
-            "operation-to-template mismatch",
-            "operations_template_mismatch",
-            "resources not listed in operations",
-            "operations reference resources not present"
-        };
-
-        return blockers.Any(b => feedback.Contains(b, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private IEnumerable<string> BuildPlanEvents(
-        string resultJson,
-        int revisionCount,
-        string status,
-        string? criticFeedbackOverride = null)
-    {
-        JsonDocument? doc = null;
-        try { doc = JsonDocument.Parse(ExtractJsonObject(resultJson)); }
-        catch { yield break; }
-
-        using (doc)
-        {
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("plan_id", out var planIdEl) ||
-                !Guid.TryParse(planIdEl.GetString(), out var planGuid))
-                yield break;
-
-            if (_autoApprovePlan)
-            {
-                _planStore.TryApprove(planGuid, out _);
-                yield return Evt("plan_auto_approved", new { plan_id = planGuid, session_id = _sessionId });
-            }
-            else
-            {
-                var ops = root.TryGetProperty("operations", out var opsEl)
-                    ? JsonSerializer.Deserialize<object[]>(opsEl.GetRawText())
-                    : Array.Empty<object>();
-
-                yield return Evt("plan", new
-                {
-                    plan_id = planIdEl.GetString(),
-                    title   = root.TryGetProperty("title", out var t) ? t.GetString() : null,
-                    operations = ops,
-                    risk_level = root.TryGetProperty("risk_level", out var r) ? r.GetString() : "Medium",
-                    estimated_cost_note = root.TryGetProperty("estimated_cost_note", out var e) && e.ValueKind != JsonValueKind.Null
-                        ? e.GetString() : null,
-                    critic_verdict = criticFeedbackOverride ?? _planStore.GetCriticInfo(planGuid).verdict,
-                    revision_count = revisionCount,
-                    status,
-                    session_id     = _sessionId
-                });
-            }
-        }
-    }
-
-    private IEnumerable<string> BuildQuestionEvents(string resultJson)
-    {
-        JsonDocument? doc = null;
-        try { doc = JsonDocument.Parse(ExtractJsonObject(resultJson)); }
-        catch { yield break; }
-
-        using (doc)
-        {
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("question_id", out var questionIdEl))
-                yield break;
-            var questionId = questionIdEl.GetString();
-            if (string.IsNullOrWhiteSpace(questionId) || !_emittedQuestionIds.Add(questionId))
-                yield break;
-
-            yield return Evt("question", new
-            {
-                question_id = questionId,
-                title = root.TryGetProperty("title", out var t) ? t.GetString() : "Clarify request",
-                prompt = root.TryGetProperty("prompt", out var p) ? p.GetString() : "",
-                options = root.TryGetProperty("options", out var o)
-                    ? JsonSerializer.Deserialize<object[]>(o.GetRawText())
-                    : Array.Empty<object>(),
-                default_value = root.TryGetProperty("default_value", out var d) ? d.GetString() : null,
-                allow_custom = !root.TryGetProperty("allow_custom", out var ac) || ac.GetBoolean(),
-                category = root.TryGetProperty("category", out var cat) ? cat.GetString() : null,
-                confirmation_scope = root.TryGetProperty("confirmation_scope", out var scope) ? scope.GetString() : null,
-                originating_agent = root.TryGetProperty("originating_agent", out var origin) ? origin.GetString() : null,
-                session_id = _sessionId
-            });
-        }
-    }
-
-    private IEnumerable<string> BuildPlainTextFallbackQuestion(string prompt)
-    {
-        var options = ExtractInlineChoices(prompt, out var cleanPrompt);
-        var defaultValue = options.Length > 0 ? options[0].value : "confirm";
-
-        var questionData = JsonSerializer.SerializeToElement(new
-        {
-            title = "Confirm infrastructure details",
-            prompt = cleanPrompt,
-            options,
-            default_value = defaultValue,
-            allow_custom = true,
-            category = "general",
-            confirmation_scope = (string?)null,
-            originating_agent = "orchestrator"
-        }, OrchestratorTools.SnakeCaseOpts);
-
-        var questionId = _questionStore.CreateQuestion(_sessionId, questionData).ToString();
-        _emittedQuestionIds.Add(questionId);
-
-        yield return Evt("question", new
-        {
-            question_id = questionId,
-            title = "Confirm infrastructure details",
-            prompt = cleanPrompt,
-            options,
-            default_value = defaultValue,
-            allow_custom = true,
-            category = "general",
-            confirmation_scope = (string?)null,
-            originating_agent = "orchestrator",
+            plan_id = planGuid,
+            title = root.TryGetProperty("title", out var title) ? title.GetString() : "Azure infrastructure plan",
+            operations = ops,
+            risk_level = root.TryGetProperty("risk_level", out var risk) ? risk.GetString() : "Medium",
+            estimated_cost_note = (string?)null,
+            revision_count = 0,
+            status = "approved",
             session_id = _sessionId
         });
-    }
-
-    private sealed record FallbackQuestionOption(string label, string value, string description);
-
-    private static FallbackQuestionOption[] ExtractInlineChoices(string prompt, out string cleanPrompt)
-    {
-        const string defaultConfirmDescription = "The listed details are correct; continue planning.";
-        const string defaultCorrectionDescription = "I will provide corrections before planning continues.";
-
-        cleanPrompt = prompt.Trim();
-        var markerIndex = prompt.IndexOf("please choose:", StringComparison.OrdinalIgnoreCase);
-        if (markerIndex < 0)
-        {
-            return
-            [
-                new("Confirm", "confirm", defaultConfirmDescription),
-                new("Needs correction", "needs_correction", defaultCorrectionDescription)
-            ];
-        }
-
-        var choicesText = prompt[(markerIndex + "please choose:".Length)..];
-        var matches = System.Text.RegularExpressions.Regex.Matches(
-            choicesText,
-            @"-\s*(?<label>.+?)(?=\s+-\s+|$)",
-            System.Text.RegularExpressions.RegexOptions.Singleline);
-
-        var choices = matches
-            .Select(m => m.Groups["label"].Value.Trim().TrimEnd('.', ';'))
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Take(4)
-            .Select(label => new FallbackQuestionOption(label, ChoiceValue(label), ChoiceDescription(label)))
-            .ToArray();
-
-        if (choices.Length == 0)
-        {
-            return
-            [
-                new("Confirm", "confirm", defaultConfirmDescription),
-                new("Needs correction", "needs_correction", defaultCorrectionDescription)
-            ];
-        }
-
-        cleanPrompt = prompt[..markerIndex].Trim();
-        return choices;
-    }
-
-    private static string ChoiceValue(string label)
-    {
-        var lower = label.ToLowerInvariant();
-        if (lower.StartsWith("yes") || lower.Contains("confirm") || lower.Contains("create"))
-            return "confirm";
-        if (lower.StartsWith("no") || lower.Contains("do not") || lower.Contains("don't"))
-            return "needs_correction";
-
-        var slug = System.Text.RegularExpressions.Regex.Replace(lower, @"[^a-z0-9]+", "_").Trim('_');
-        return string.IsNullOrWhiteSpace(slug) ? "option" : slug;
-    }
-
-    private static string ChoiceDescription(string label)
-    {
-        var lower = label.ToLowerInvariant();
-        if (lower.StartsWith("yes") || lower.Contains("confirm") || lower.Contains("create"))
-            return "Continue with this choice.";
-        if (lower.StartsWith("no") || lower.Contains("do not") || lower.Contains("don't"))
-            return "Pause so I can provide corrections.";
-        return "Use this option.";
-    }
-
-    private static bool LooksLikePlainTextQuestion(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text) || !text.Contains('?'))
-            return false;
-
-        return ContainsAny(text,
-            "could you please confirm",
-            "please confirm",
-            "provide any corrections",
-            "need to confirm",
-            "can you confirm",
-            "would you like",
-            "which option",
-            "choose");
-    }
-
-    private static bool IsQuestionResult(string resultJson)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(ExtractJsonObject(resultJson));
-            return doc.RootElement.TryGetProperty("question_id", out _);
-        }
-        catch { return false; }
-    }
-
-    private static bool ContainsAny(string value, params string[] needles) =>
-        needles.Any(n => value.Contains(n, StringComparison.OrdinalIgnoreCase));
-
-    private static string ExtractJsonObject(string text)
-    {
-        var start = text.IndexOf('{');
-        if (start < 0) return text;
-
-        var depth = 0;
-        var inString = false;
-        var escaped = false;
-        for (var i = start; i < text.Length; i++)
-        {
-            var ch = text[i];
-            if (escaped)
-            {
-                escaped = false;
-                continue;
-            }
-            if (ch == '\\' && inString)
-            {
-                escaped = true;
-                continue;
-            }
-            if (ch == '"')
-            {
-                inString = !inString;
-                continue;
-            }
-            if (inString) continue;
-
-            if (ch == '{') depth++;
-            else if (ch == '}')
-            {
-                depth--;
-                if (depth == 0)
-                    return text[start..(i + 1)];
-            }
-        }
-
-        return text[start..];
     }
 
     private static (string? errorType, string? message) SummarizeResult(string json)
     {
-        try
-        {
-            using var doc = JsonDocument.Parse(ExtractJsonObject(json));
-            var root = doc.RootElement;
-            var errorType = root.TryGetProperty("error_type", out var et) ? et.GetString() : null;
-            var message = root.TryGetProperty("message", out var msg) ? msg.GetString() :
-                root.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.String ? err.GetString() : null;
-            return (errorType, message);
-        }
-        catch { return (null, null); }
+        if (AgentResultParser.TryParse(json, out var parsed) &&
+            (!string.IsNullOrWhiteSpace(parsed.ErrorType) || !string.IsNullOrWhiteSpace(parsed.Message)))
+            return (parsed.ErrorType, parsed.Message);
+
+        return (null, null);
     }
 
     private static string Preview(string value)
     {
         const int max = 900;
-        var redacted = Redact(value);
-        return redacted.Length <= max ? redacted : redacted[..max] + "…";
+        return value.Length <= max ? value : value[..max] + "...";
     }
 
-    private static string Redact(string value) =>
-        System.Text.RegularExpressions.Regex.Replace(
-            value,
-            "(?i)(pat|token|key|secret|authorization|connectionstring|connection_string)(\"?\\s*[:=]\\s*\"?)[^\",}\\s]+",
-            "$1$2[redacted]");
-
-    private static string ActivityStartSummary(string toolName) => $"{ToolDisplayName(toolName)} started";
-    private static string ActivityEndSummary(string toolName) => $"{ToolDisplayName(toolName)} completed";
-
-    private static string ToolDisplayName(string toolName) => toolName switch
-    {
-        "investigate_infrastructure" => "Investigator",
-        "plan_deployment" => "Planner",
-        "critique_plan" => "Critic",
-        "ask_clarifying_question" => "Questioner",
-        "execute_plan" => "Executor",
-        "reflect_on_deployment" => "Reflector",
-        "get_lessons" => "Lessons learned",
-        _ => toolName
-    };
-
-    private static string ToolNameToAgentName(string toolName) => toolName switch
-    {
-        "investigate_infrastructure" => "investigator",
-        "plan_deployment"            => "planner",
-        "critique_plan"              => "critic",
-        "ask_clarifying_question"    => "questioner",
-        "execute_plan"               => "executor",
-        "reflect_on_deployment"      => "reflector",
-        _                            => toolName
-    };
-
-    internal static string Evt(string type, object data) =>
-        JsonSerializer.Serialize(new { type, data = JsonSerializer.SerializeToElement(data) });
+    public static string Evt(string type, object data) => JsonSerializer.Serialize(new { type, data });
 }

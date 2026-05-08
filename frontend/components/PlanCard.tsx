@@ -7,7 +7,6 @@ import {
   ChevronRight,
   ListChecks,
   Loader2,
-  RefreshCw,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
@@ -42,7 +41,6 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
   const [status, setStatus] = useState<"pending" | "approving" | "rejecting" | "approved" | "rejected">(plan.status ?? "pending");
   const [detailsOpenOverride, setDetailsOpenOverride] = useState<boolean | undefined>();
   const detailsOpen = detailsOpenOverride ?? defaultDetailsOpen;
-  const criticRejected = status === "rejected";
 
   async function handleApprove() {
     setStatus("approving");
@@ -74,8 +72,8 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
             <ListChecks size={15} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className={`text-[10px] font-semibold uppercase tracking-wide ${criticRejected ? "text-red-300" : "text-blue-300"}`}>
-              {criticRejected ? "Plan rejected by critic" : "Plan ready for approval"}
+            <div className={`text-[10px] font-semibold uppercase tracking-wide ${status === "rejected" ? "text-red-300" : "text-blue-300"}`}>
+              {status === "approved" ? "Prototype plan auto-approved" : status === "rejected" ? "Plan cancelled" : "Plan ready"}
             </div>
             <div className="break-words font-semibold leading-snug text-slate-100">{plan.title}</div>
           </div>
@@ -89,18 +87,10 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
           }`}>
             {plan.riskLevel} blast radius
           </div>
-          <div className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] font-semibold ${
-            criticRejected ? "border-red-800 bg-red-950 text-red-300" : "border-slate-700 bg-slate-950 text-slate-300"
-          }`}>
+          <div className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
             <ShieldCheck size={9} />
-            {criticRejected ? "Critic rejected" : "Critic passed"}
+            {status === "approved" ? "Auto-approved" : "Validated"}
           </div>
-          {(plan.revisionCount ?? 0) > 0 && (
-            <div className="inline-flex items-center gap-1 rounded border border-purple-800 bg-purple-950 px-2 py-0.5 text-[10px] font-semibold text-purple-300">
-              <RefreshCw size={9} />
-              Critic: {plan.revisionCount} revision{plan.revisionCount === 1 ? "" : "s"}
-            </div>
-          )}
           <div className="inline-flex items-center rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
             {plan.operations.length} operation{plan.operations.length === 1 ? "" : "s"}
           </div>
@@ -144,7 +134,7 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
         <div className="border-t border-slate-800 bg-slate-950/70 px-3 py-2">
           <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold text-slate-300">
             <ShieldCheck size={11} className="text-green-400" />
-            Critic assessment
+            Plan note
           </div>
           <div className="break-words text-[10px] leading-relaxed text-slate-400">{plan.criticVerdict}</div>
         </div>
@@ -160,12 +150,12 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
         {status === "approved" ? (
           <div className="flex items-center gap-1.5 text-green-400">
             <CheckCircle2 size={13} />
-            <span>Approved. Executor starting...</span>
+            <span>Auto-approved. Agent running...</span>
           </div>
         ) : status === "rejected" ? (
           <div className="flex items-center gap-1.5 text-red-400">
             <XCircle size={13} />
-            <span>{plan.criticVerdict ? "Rejected. See critic assessment." : "Rejected"}</span>
+            <span>Rejected</span>
           </div>
         ) : (
           <>

@@ -66,4 +66,7 @@ public sealed class InfraComponentSpec
         value = default;
         return false;
     }
+
+    internal bool TryGetElementForCompiler(string name, out JsonElement value) =>
+        TryGetElement(name, out value);
 }
