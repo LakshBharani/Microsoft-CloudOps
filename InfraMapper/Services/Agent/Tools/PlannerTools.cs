@@ -70,6 +70,7 @@ public sealed class PlannerTools
         var parsedOperations = ParseOperations(operations);
         if (parsedOperations is null)
         {
+            Console.WriteLine($"[PlannerTools] create_plan invalid_operations title={PreviewForLog(title)} operations_kind={operations.ValueKind}");
             return JsonSerializer.Serialize(new
             {
                 error = true,
@@ -89,17 +90,41 @@ public sealed class PlannerTools
             }, OrchestratorTools.SnakeCaseOpts);
         }
 
+        Console.WriteLine(
+            $"[PlannerTools] create_plan title={PreviewForLog(title)} ops={parsedOperations.Length} " +
+            $"op_names={FormatForLog(parsedOperations.Select(o => $"{o.ResourceType}:{o.ResourceName}"))} " +
+            $"template_names={FormatForLog(ExtractTemplateResourceNamesForLog(templateJson))} " +
+            $"resource_group={resourceGroupName ?? ""} location={location ?? ""}");
+
         var nameChoiceError = ValidateUserNamedResources(parsedOperations);
-        if (nameChoiceError is not null) return nameChoiceError;
+        if (nameChoiceError is not null)
+        {
+            Console.WriteLine($"[PlannerTools] create_plan rejected error_type=requires_user_choice result={PreviewForLog(nameChoiceError)}");
+            return nameChoiceError;
+        }
 
         var templateJsonText = NormalizeJsonArgument(templateJson);
         var parametersJsonText = NormalizeJsonArgument(parametersJson) ?? "{}";
 
         var structural = PlanStructuralValidator.Validate(_taskState, parsedOperations, templateJsonText);
-        if (structural is not null) return SerializeValidatorError(structural);
+        if (structural is not null)
+        {
+            var result = SerializeValidatorError(structural);
+            Console.WriteLine($"[PlannerTools] create_plan rejected error_type={structural.ErrorType} result={PreviewForLog(result)}");
+            return result;
+        }
 
         var policy = PlanPolicyValidator.Validate(_taskState, parsedOperations);
-        if (policy is not null) return SerializeValidatorError(policy);
+        if (policy is not null)
+        {
+            var result = SerializeValidatorError(policy);
+            Console.WriteLine($"[PlannerTools] create_plan rejected error_type={policy.ErrorType} result={PreviewForLog(result)}");
+            return result;
+        }
+
+        var normalizedRiskLevel = NormalizeRiskLevel(parsedOperations, riskLevel);
+        if (!string.Equals(normalizedRiskLevel, riskLevel, StringComparison.OrdinalIgnoreCase))
+            Console.WriteLine($"[PlannerTools] create_plan normalized_risk from={riskLevel} to={normalizedRiskLevel}");
 
         if (!string.IsNullOrWhiteSpace(parametersJsonText) && parametersJsonText != "{}")
         {
@@ -120,7 +145,7 @@ public sealed class PlannerTools
             {
                 title,
                 operations = parsedOperations,
-                risk_level = riskLevel,
+                risk_level = normalizedRiskLevel,
                 estimated_cost_note = estimatedCostNote,
                 template_json = string.IsNullOrWhiteSpace(templateJsonText) ? null : templateJsonText,
                 parameters_json = string.IsNullOrWhiteSpace(parametersJsonText) ? "{}" : parametersJsonText,
@@ -140,7 +165,7 @@ public sealed class PlannerTools
             status = "awaiting_user_approval",
             title,
             operations = parsedOperations,
-            risk_level = riskLevel,
+            risk_level = normalizedRiskLevel,
             estimated_cost_note = estimatedCostNote,
             template_json = string.IsNullOrWhiteSpace(templateJsonText) ? null : templateJsonText,
             parameters_json = string.IsNullOrWhiteSpace(parametersJsonText) ? "{}" : parametersJsonText,
@@ -148,6 +173,17 @@ public sealed class PlannerTools
             location = string.IsNullOrWhiteSpace(location) ? null : location,
             deployment_name = string.IsNullOrWhiteSpace(deploymentName) ? null : deploymentName
         }, OrchestratorTools.SnakeCaseOpts);
+    }
+
+    private static string NormalizeRiskLevel(PlanOperationDto[] operations, string riskLevel)
+    {
+        if (operations.Any(o =>
+                string.Equals(o.Action, "Delete", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(o.Action, "Update", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(o.ResourceType, "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase)))
+            return "High";
+
+        return string.IsNullOrWhiteSpace(riskLevel) ? "Medium" : riskLevel;
     }
 
     private static string SerializeValidatorError(ValidatorError error)
@@ -180,6 +216,78 @@ public sealed class PlannerTools
             JsonValueKind.String => value.GetString(),
             _ => value.GetRawText()
         };
+    }
+
+    private static string FormatForLog(IEnumerable<string?> values)
+    {
+        var filtered = values
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Take(20)
+            .ToArray();
+        return filtered.Length == 0 ? "[]" : $"[{string.Join(", ", filtered)}]";
+    }
+
+    private static IEnumerable<string> ExtractTemplateResourceNamesForLog(JsonElement templateJson)
+    {
+        var text = NormalizeJsonArgument(templateJson);
+        if (string.IsNullOrWhiteSpace(text)) yield break;
+
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(text);
+        }
+        catch
+        {
+            yield break;
+        }
+
+        using (doc)
+        {
+            foreach (var name in EnumerateTemplateResourceNamesForLog(doc.RootElement))
+                yield return name;
+        }
+    }
+
+    private static IEnumerable<string> EnumerateTemplateResourceNamesForLog(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) yield break;
+        if (!root.TryGetProperty("resources", out var resources) || resources.ValueKind != JsonValueKind.Array)
+            yield break;
+
+        foreach (var resource in resources.EnumerateArray())
+        {
+            if (resource.ValueKind != JsonValueKind.Object) continue;
+            var type = GetString(resource, "type") ?? "";
+            var name = GetString(resource, "name") ?? "";
+            if (!string.IsNullOrWhiteSpace(type) || !string.IsNullOrWhiteSpace(name))
+                yield return $"{type}:{name}";
+
+            var nestedTemplate = GetNestedForLog(resource, "properties", "template");
+            if (nestedTemplate is null) continue;
+            foreach (var nestedName in EnumerateTemplateResourceNamesForLog(nestedTemplate.Value))
+                yield return nestedName;
+        }
+    }
+
+    private static JsonElement? GetNestedForLog(JsonElement obj, params string[] path)
+    {
+        var current = obj;
+        foreach (var key in path)
+        {
+            if (current.ValueKind != JsonValueKind.Object) return null;
+            if (!current.TryGetProperty(key, out var next)) return null;
+            current = next;
+        }
+        return current;
+    }
+
+    private static string PreviewForLog(string? value)
+    {
+        const int max = 500;
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var normalized = Regex.Replace(value, "\\s+", " ").Trim();
+        return normalized.Length <= max ? normalized : normalized[..max] + "...";
     }
 
     private static PlanOperationDto[]? ParseOperations(JsonElement operations)

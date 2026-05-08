@@ -237,8 +237,15 @@ public sealed class SseEventTranslator
 
         if (approved == false)
         {
-            // Critic rejected: discard the buffered plan. The activity stream still carries
-            // the critic result, but rejected plans should not be shown as approvable plans.
+            if (!IsBlockingCriticFeedback(feedback))
+            {
+                foreach (var evt in EmitBufferedPlan(criticFeedbackOverride: $"Critic warning: {feedback}"))
+                    yield return evt;
+                yield break;
+            }
+
+            // Critic found a blocking issue: discard the buffered plan. The activity stream
+            // still carries the critic result, but blocked plans should not be approvable.
             _bufferedPlanResultJson = null;
             _planRevisionCount++;
             yield break;
@@ -249,14 +256,41 @@ public sealed class SseEventTranslator
             yield return evt;
     }
 
-    private IEnumerable<string> EmitBufferedPlan()
+    private IEnumerable<string> EmitBufferedPlan(string? criticFeedbackOverride = null)
     {
         if (_bufferedPlanResultJson is null) yield break;
 
-        foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount, "pending"))
+        foreach (var evt in BuildPlanEvents(_bufferedPlanResultJson, _planRevisionCount, "pending", criticFeedbackOverride))
             yield return evt;
 
         _bufferedPlanResultJson = null;
+    }
+
+    private static bool IsBlockingCriticFeedback(string? feedback)
+    {
+        if (string.IsNullOrWhiteSpace(feedback)) return false;
+
+        string[] blockers =
+        {
+            "missing template_json",
+            "missing_template_json",
+            "invalid_template_json",
+            "not valid JSON",
+            "policy violation",
+            "policy_violation",
+            "no-compute",
+            "disallowed",
+            "sku under properties",
+            "missing top-level sku",
+            "missing top-level resourceGroup",
+            "missing resourceGroup",
+            "operation-to-template mismatch",
+            "operations_template_mismatch",
+            "resources not listed in operations",
+            "operations reference resources not present"
+        };
+
+        return blockers.Any(b => feedback.Contains(b, StringComparison.OrdinalIgnoreCase));
     }
 
     private IEnumerable<string> BuildPlanEvents(
@@ -470,10 +504,41 @@ public sealed class SseEventTranslator
     private static string ExtractJsonObject(string text)
     {
         var start = text.IndexOf('{');
-        var end = text.LastIndexOf('}');
-        return start >= 0 && end > start
-            ? text[start..(end + 1)]
-            : text;
+        if (start < 0) return text;
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString)
+            {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+            if (inString) continue;
+
+            if (ch == '{') depth++;
+            else if (ch == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return text[start..(i + 1)];
+            }
+        }
+
+        return text[start..];
     }
 
     private static (string? errorType, string? message) SummarizeResult(string json)

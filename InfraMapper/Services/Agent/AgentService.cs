@@ -384,14 +384,16 @@ public sealed class AgentService
         var plan = await RunDirectToolAsync(
             "plan_deployment",
             () => orchestrator.PlanDeployment(intent, investigation.Result, ct));
-        Console.WriteLine($"[Planning] planner_done success={plan.Success} result_len={plan.Result.Length}");
+        Console.WriteLine($"[Planning] planner_done success={plan.Success} result_len={plan.Result.Length} result_preview={PreviewForLog(plan.Result)}");
         foreach (var evt in plan.Events)
             yield return evt;
         if (!plan.Success || TryExtractQuestionId(plan.Result, out _))
             yield break;
 
-        if (!TryExtractPlanId(plan.Result, out var planId))
+        if (!TryExtractPlanId(plan.Result, out var planId) &&
+            !TryExtractPlanIdFromEvents(plan.Events, out planId))
         {
+            Console.WriteLine($"[Planning] plan_id_extract_failed result_preview={PreviewForLog(plan.Result)}");
             var deterministicPlan = TryCreateDeterministicPlan(intent);
             if (deterministicPlan is null)
                 yield break;
@@ -406,6 +408,52 @@ public sealed class AgentService
             () => orchestrator.CritiquePlan(planId, ct));
         foreach (var evt in critique.Events)
             yield return evt;
+
+        if (critique.Success &&
+            TryExtractCriticVerdict(critique.Result, out var approved, out var feedback) &&
+            approved == false)
+        {
+            Console.WriteLine($"[Planning] critic_rejected plan_id={planId} feedback={PreviewForLog(feedback)}");
+            if (!IsBlockingCriticFeedback(feedback))
+            {
+                Console.WriteLine($"[Planning] critic_feedback_advisory plan_id={planId}");
+                yield break;
+            }
+
+            var revisionIntent = BuildCriticRevisionIntent(intent, planId, feedback);
+            var revisedPlan = await RunDirectToolAsync(
+                "plan_deployment",
+                () => orchestrator.PlanDeployment(revisionIntent, investigation.Result, ct));
+            Console.WriteLine($"[Planning] revised_planner_done success={revisedPlan.Success} result_len={revisedPlan.Result.Length} result_preview={PreviewForLog(revisedPlan.Result)}");
+            foreach (var evt in revisedPlan.Events)
+                yield return evt;
+
+            if (!revisedPlan.Success ||
+                TryExtractQuestionId(revisedPlan.Result, out _) ||
+                (!TryExtractPlanId(revisedPlan.Result, out var revisedPlanId) &&
+                 !TryExtractPlanIdFromEvents(revisedPlan.Events, out revisedPlanId)))
+                yield break;
+
+            var revisedCritique = await RunDirectToolAsync(
+                "critique_plan",
+                () => orchestrator.CritiquePlan(revisedPlanId, ct));
+            foreach (var evt in revisedCritique.Events)
+                yield return evt;
+
+            if (revisedCritique.Success &&
+                TryExtractCriticVerdict(revisedCritique.Result, out var revisedApproved, out var revisedFeedback) &&
+                revisedApproved == false)
+            {
+                Console.WriteLine($"[Planning] revised_critic_rejected plan_id={revisedPlanId} feedback={PreviewForLog(revisedFeedback)}");
+                if (!IsBlockingCriticFeedback(revisedFeedback))
+                {
+                    Console.WriteLine($"[Planning] revised_critic_feedback_advisory plan_id={revisedPlanId}");
+                    yield break;
+                }
+
+                yield return new AgentStreamEvent.Done($"Critic rejected the revised plan: {revisedFeedback}");
+            }
+        }
     }
 
     private DeterministicPlanRun? TryCreateDeterministicPlan(string intent)
@@ -803,6 +851,21 @@ public sealed class AgentService
         }
     }
 
+    private static bool TryExtractPlanIdFromEvents(IEnumerable<AgentStreamEvent> events, out string planId)
+    {
+        foreach (var evt in events)
+        {
+            if (evt is AgentStreamEvent.ToolResult tr &&
+                tr.Success &&
+                string.Equals(tr.ToolName, "create_plan", StringComparison.OrdinalIgnoreCase) &&
+                TryExtractPlanId(tr.ResultJson, out planId))
+                return true;
+        }
+
+        planId = "";
+        return false;
+    }
+
     private static bool TryExtractQuestionId(string json, out string questionId)
     {
         questionId = "";
@@ -818,6 +881,73 @@ public sealed class AgentService
         {
             return false;
         }
+    }
+
+    private static bool TryExtractCriticVerdict(string json, out bool approved, out string feedback)
+    {
+        approved = false;
+        feedback = "";
+        try
+        {
+            using var doc = JsonDocument.Parse(ExtractJsonObject(json));
+            if (!doc.RootElement.TryGetProperty("approved", out var approvedEl) ||
+                approvedEl.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return false;
+
+            approved = approvedEl.GetBoolean();
+            if (doc.RootElement.TryGetProperty("feedback", out var feedbackEl) &&
+                feedbackEl.ValueKind == JsonValueKind.String)
+                feedback = feedbackEl.GetString() ?? "";
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildCriticRevisionIntent(string originalIntent, string rejectedPlanId, string feedback) => $"""
+        Revise the deployment plan rejected by Critic.
+
+        Original user intent:
+        {originalIntent}
+
+        Rejected plan id: {rejectedPlanId}
+
+        Critic feedback to fix:
+        {feedback}
+
+        Produce a new complete plan that addresses every critic issue. If a resource group already
+        exists and the deployment is resource-group scoped, do not include a standalone resource group
+        tag update unless the template also applies it correctly. If resource group tag changes are
+        required, use a subscription-scoped template that includes the resource group update.
+        """;
+
+    private static bool IsBlockingCriticFeedback(string feedback)
+    {
+        if (string.IsNullOrWhiteSpace(feedback)) return false;
+
+        string[] blockers =
+        {
+            "missing template_json",
+            "missing_template_json",
+            "invalid_template_json",
+            "not valid JSON",
+            "policy violation",
+            "policy_violation",
+            "no-compute",
+            "disallowed",
+            "sku under properties",
+            "missing top-level sku",
+            "missing top-level resourceGroup",
+            "missing resourceGroup",
+            "operation-to-template mismatch",
+            "operations_template_mismatch",
+            "resources not listed in operations",
+            "operations reference resources not present"
+        };
+
+        return blockers.Any(b => feedback.Contains(b, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool IsSuccessfulToolResult(string json)
@@ -887,10 +1017,49 @@ public sealed class AgentService
     private static string ExtractJsonObject(string text)
     {
         var start = text.IndexOf('{');
-        var end = text.LastIndexOf('}');
-        return start >= 0 && end > start
-            ? text[start..(end + 1)]
-            : text;
+        if (start < 0) return text;
+
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inString)
+            {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+            if (inString) continue;
+
+            if (ch == '{') depth++;
+            else if (ch == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return text[start..(i + 1)];
+            }
+        }
+
+        return text[start..];
+    }
+
+    private static string PreviewForLog(string value)
+    {
+        const int max = 900;
+        if (string.IsNullOrEmpty(value)) return "";
+        var normalized = Regex.Replace(value, "\\s+", " ").Trim();
+        return normalized.Length <= max ? normalized : normalized[..max] + "...";
     }
 
     private static bool ShouldRetryForMissingProgress(string message, string finalText)

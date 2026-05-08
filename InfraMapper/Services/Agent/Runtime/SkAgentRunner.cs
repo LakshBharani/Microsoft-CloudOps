@@ -191,6 +191,7 @@ public sealed class SkAgentRunner
                 ? $"{toolName}_{Guid.NewGuid():N}"
                 : context.ToolCallId!;
 
+            Console.WriteLine($"[SkRunner] tool_start agent={context.Function.PluginName ?? "unknown"} tool={toolName} call_id={callId}");
             Add(new AgentStreamEvent.ToolCall(toolName, callId));
 
             List<AgentStreamEvent> nestedEvents;
@@ -203,6 +204,7 @@ public sealed class SkAgentRunner
             catch (Exception ex)
             {
                 var errorJson = JsonSerializer.Serialize(new { error = true, message = NormalizeError(ex) });
+                Console.WriteLine($"[SkRunner] tool_error tool={toolName} call_id={callId} result={Preview(errorJson)}");
                 Add(new AgentStreamEvent.ToolResult(toolName, callId, false, errorJson));
                 return;
             }
@@ -211,7 +213,10 @@ public sealed class SkAgentRunner
                 Add(activity);
 
             var resultJson = ResultToString(context.Result);
-            Add(new AgentStreamEvent.ToolResult(toolName, callId, IsSuccessfulToolResult(resultJson), resultJson));
+            var success = IsSuccessfulToolResult(resultJson);
+            var (errorType, message) = SummarizeToolResult(resultJson);
+            Console.WriteLine($"[SkRunner] tool_done tool={toolName} call_id={callId} success={success} error_type={errorType ?? ""} message={message ?? ""} result_preview={Preview(resultJson)}");
+            Add(new AgentStreamEvent.ToolResult(toolName, callId, success, resultJson));
         }
 
         private void Add(AgentStreamEvent evt)
@@ -346,8 +351,41 @@ public sealed class SkAgentRunner
         private static string ExtractJsonObject(string text)
         {
             var start = text.IndexOf('{');
-            var end = text.LastIndexOf('}');
-            return start >= 0 && end > start ? text[start..(end + 1)] : text;
+            if (start < 0) return text;
+
+            var depth = 0;
+            var inString = false;
+            var escaped = false;
+            for (var i = start; i < text.Length; i++)
+            {
+                var ch = text[i];
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+                if (ch == '\\' && inString)
+                {
+                    escaped = true;
+                    continue;
+                }
+                if (ch == '"')
+                {
+                    inString = !inString;
+                    continue;
+                }
+                if (inString) continue;
+
+                if (ch == '{') depth++;
+                else if (ch == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                        return text[start..(i + 1)];
+                }
+            }
+
+            return text[start..];
         }
 
         private static string Preview(string value)

@@ -19,6 +19,9 @@ public static class PlanStructuralValidator
         var templateError = ValidateTemplateShape(operations, templateJson);
         if (templateError is not null) return templateError;
 
+        var scopeError = ValidateDeploymentScope(templateJson);
+        if (scopeError is not null) return scopeError;
+
         var parityError = ValidateOperationsTemplateParity(operations, templateJson);
         if (parityError is not null) return parityError;
 
@@ -27,6 +30,40 @@ public static class PlanStructuralValidator
 
         var nameError = ValidateNames(operations);
         if (nameError is not null) return nameError;
+
+        return null;
+    }
+
+    private static ValidatorError? ValidateDeploymentScope(string? templateJson)
+    {
+        if (string.IsNullOrWhiteSpace(templateJson)) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(templateJson);
+            foreach (var resource in EnumerateDirectResources(doc.RootElement))
+            {
+                var type = GetString(resource, "type") ?? "";
+                if (!type.Equals("Microsoft.Resources/deployments", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var nestedTemplate = GetNested(resource, "properties", "template");
+                if (nestedTemplate is null || !NestedTemplateHasResourceGroupResources(nestedTemplate.Value))
+                    continue;
+
+                if (!resource.TryGetProperty("resourceGroup", out var resourceGroupEl) ||
+                    resourceGroupEl.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(resourceGroupEl.GetString()))
+                {
+                    return new ValidatorError(
+                        "invalid_deployment_scope",
+                        $"Nested deployment '{GetString(resource, "name")}' contains resource-group resources but is missing top-level resourceGroup.");
+                }
+            }
+        }
+        catch
+        {
+        }
 
         return null;
     }
@@ -198,7 +235,9 @@ public static class PlanStructuralValidator
             .Select(n => n.Contains('/') ? n[(n.IndexOf('/') + 1)..] : n)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var wrapperNames = ExtractTemplateWrapperResourceNames(templateJson);
         var missingFromOperations = templateNames
+            .Where(n => !wrapperNames.Contains(n, StringComparer.OrdinalIgnoreCase))
             .Where(n => !operationNamesNonDelete.Contains(n) &&
                         !inlineChildOnlyNames.Contains(n) &&
                         !string.IsNullOrWhiteSpace(n))
@@ -211,6 +250,31 @@ public static class PlanStructuralValidator
                 new { missing_from_operations = missingFromOperations });
 
         return null;
+    }
+
+    private static HashSet<string> ExtractTemplateWrapperResourceNames(string templateJson)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var doc = JsonDocument.Parse(templateJson);
+            foreach (var resource in EnumerateAllResources(doc.RootElement))
+            {
+                var type = GetString(resource, "type") ?? "";
+                if (!type.Equals("Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase) &&
+                    !type.Equals("Microsoft.Resources/deployments", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var name = GetString(resource, "name");
+                if (!string.IsNullOrWhiteSpace(name))
+                    names.Add(NormalizeName(name!));
+            }
+        }
+        catch
+        {
+        }
+
+        return names;
     }
 
     private static ValidatorError? ValidateAzureProps(PlanOperationDto[] operations, string? templateJson)
@@ -245,12 +309,39 @@ public static class PlanStructuralValidator
                             $"Subnet '{GetString(resource, "name")}' missing properties.addressPrefix(es).");
                 }
                 subnet_done:;
+                if (type.Equals("Microsoft.KeyVault/vaults", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!resource.TryGetProperty("sku", out var sku) || sku.ValueKind != JsonValueKind.Object)
+                        return new ValidatorError(
+                            "invalid_template_json",
+                            $"Key Vault '{GetString(resource, "name")}' missing top-level sku.");
+
+                    var props = GetNested(resource, "properties");
+                    if (props is not null &&
+                        props.Value.ValueKind == JsonValueKind.Object &&
+                        props.Value.TryGetProperty("sku", out _))
+                        return new ValidatorError(
+                            "invalid_template_json",
+                            $"Key Vault '{GetString(resource, "name")}' has sku under properties; move sku to the resource top level.");
+                }
             }
         }
         catch
         {
         }
         return null;
+    }
+
+    private static bool NestedTemplateHasResourceGroupResources(JsonElement template)
+    {
+        foreach (var resource in EnumerateAllResources(template))
+        {
+            var type = GetString(resource, "type") ?? "";
+            if (!type.StartsWith("Microsoft.Resources/", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     private static ValidatorError? ValidateNames(PlanOperationDto[] operations)
@@ -290,6 +381,20 @@ public static class PlanStructuralValidator
 
     private static IEnumerable<JsonElement> EnumerateAllResources(JsonElement root)
     {
+        foreach (var resource in EnumerateDirectResources(root))
+        {
+            yield return resource;
+
+            // Nested deployments: resources[].properties.template.resources[]
+            var nestedTemplate = GetNested(resource, "properties", "template");
+            if (nestedTemplate is null) continue;
+            foreach (var inner in EnumerateAllResources(nestedTemplate.Value))
+                yield return inner;
+        }
+    }
+
+    private static IEnumerable<JsonElement> EnumerateDirectResources(JsonElement root)
+    {
         if (root.ValueKind != JsonValueKind.Object) yield break;
         if (!root.TryGetProperty("resources", out var resources) || resources.ValueKind != JsonValueKind.Array)
             yield break;
@@ -298,12 +403,6 @@ public static class PlanStructuralValidator
         {
             if (resource.ValueKind != JsonValueKind.Object) continue;
             yield return resource;
-
-            // Nested deployments: resources[].properties.template.resources[]
-            var nestedTemplate = GetNested(resource, "properties", "template");
-            if (nestedTemplate is null) continue;
-            foreach (var inner in EnumerateAllResources(nestedTemplate.Value))
-                yield return inner;
         }
     }
 
