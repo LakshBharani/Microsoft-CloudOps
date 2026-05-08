@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Bot, Wrench, CheckCircle2, XCircle, X, ChevronDown, ChevronRight, Cpu, AlertTriangle } from "lucide-react";
 import { streamChat } from "@/lib/api";
-import type { ChatMessage, ToolCall, Plan, ResourceNode, AgentActivityItem, ClarifyingQuestion } from "@/lib/types";
+import type { ChatMessage, ToolCall, Plan, ResourceNode, AgentActivityItem, ClarifyingQuestion, AgentStreamEvent } from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import PlanCard from "./PlanCard";
 import QuestionCard from "./QuestionCard";
@@ -48,10 +48,10 @@ const AGENT_LABELS: Record<string, string> = {
   reflect_on_deployment: "Reflector",
 };
 
-const ORCHESTRATOR_MODEL = "claude-haiku-4-5";
+const ORCHESTRATOR_MODEL = "o4-mini";
 
 function formatModelName(model?: string) {
-  return model?.replace(/^claude-/, "").replace(/-/g, " ");
+  return model?.replace(/^gpt-/, "gpt ").replace(/-/g, " ");
 }
 
 function collapsePreviousAgentRich(messages: ChatMessage[]) {
@@ -222,7 +222,6 @@ function AgentMessage({
           status: "running" as const,
           summary: "Waiting for agent activity",
           message: "Starting work...",
-          startedAt: Date.now(),
         }]
       : undefined;
 
@@ -310,8 +309,43 @@ export default function ChatPanel({
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  function handleActivityStart(data: Extract<import("@/lib/types").AgentStreamEvent, { type: "activity_start" }>["data"]) {
-    const item: AgentActivityItem = {
+  function updateLatestAgentMessage(patchMessage: (msg: ChatMessage) => ChatMessage) {
+    onMessagesChange((prev: ChatMessage[]) => {
+      const msgs = [...prev];
+      let index = -1;
+
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === "agent" && (msgs[i].isStreaming || index < 0)) {
+          index = i;
+          if (msgs[i].isStreaming) break;
+        }
+      }
+
+      if (index < 0) {
+        msgs.push({ role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false });
+        index = msgs.length - 1;
+      }
+
+      msgs[index] = patchMessage(msgs[index]);
+      return msgs;
+    });
+  }
+
+  function upsertActivity(item: AgentActivityItem) {
+    updateLatestAgentMessage((msg) => {
+      const activities = msg.activities ?? [];
+      const existing = activities.find((p) => p.id === item.id);
+      return {
+        ...msg,
+        activities: existing
+          ? activities.map((p) => p.id === item.id ? { ...p, ...item, startedAt: p.startedAt ?? item.startedAt } : p)
+          : [...activities, item],
+      };
+    });
+  }
+
+  function handleActivityStart(data: Extract<AgentStreamEvent, { type: "activity_start" }>["data"]) {
+    upsertActivity({
       id: data.id,
       parentId: data.parent_id ?? undefined,
       kind: data.kind,
@@ -324,27 +358,12 @@ export default function ChatPanel({
       errorType: data.error_type ?? undefined,
       message: data.message ?? undefined,
       startedAt: Date.now(),
-    };
-    onMessagesChange((prev: ChatMessage[]) => {
-      const msgs = [...prev];
-      const last = msgs[msgs.length - 1];
-      const activities = last.activities ?? [];
-      const existing = activities.find((p) => p.id === item.id);
-      msgs[msgs.length - 1] = {
-        ...last,
-        activities: existing
-          ? activities.map((p) => p.id === item.id ? { ...p, ...item, startedAt: p.startedAt ?? item.startedAt } : p)
-          : [...activities, item],
-      };
-      return msgs;
     });
   }
 
-  function handleActivityEnd(data: Extract<import("@/lib/types").AgentStreamEvent, { type: "activity_end" }>["data"]) {
-    onMessagesChange((prev: ChatMessage[]) => {
-      const msgs = [...prev];
-      const last = msgs[msgs.length - 1];
-      const activities = last.activities ?? [];
+  function handleActivityEnd(data: Extract<AgentStreamEvent, { type: "activity_end" }>["data"]) {
+    updateLatestAgentMessage((msg) => {
+      const activities = msg.activities ?? [];
       const existing = activities.find((p) => p.id === data.id);
       const patch: Partial<AgentActivityItem> = {
         status: data.status,
@@ -368,13 +387,81 @@ export default function ChatPanel({
         message: data.message ?? undefined,
         endedAt: Date.now(),
       };
-      msgs[msgs.length - 1] = {
-        ...last,
+      return {
+        ...msg,
         activities: existing
           ? activities.map((p) => p.id === data.id ? { ...p, ...patch } : p)
           : [...activities, fallback],
       };
-      return msgs;
+    });
+  }
+
+  function handleAgentCall(data: Extract<AgentStreamEvent, { type: "agent_call" }>["data"]) {
+    const id = data.parent_tool_call_id ?? `${data.agent}-${data.iteration}`;
+    upsertActivity({
+      id,
+      kind: "agent",
+      agent: data.agent,
+      model: data.model,
+      status: "running",
+      summary: `${AGENT_LABELS[data.agent] ?? data.agent} started`,
+      message: `Iteration ${data.iteration}`,
+      startedAt: Date.now(),
+    });
+  }
+
+  function handleAgentResult(data: Extract<AgentStreamEvent, { type: "agent_result" }>["data"]) {
+    const id = `${data.agent}-${data.iteration}`;
+    updateLatestAgentMessage((msg) => {
+      const activities = msg.activities ?? [];
+      const existing = activities.find((p) => p.id === id || (p.agent === data.agent && p.status === "running"));
+      const resolvedId = existing?.id ?? id;
+      const label = AGENT_LABELS[data.agent] ?? data.agent;
+      const patch: Partial<AgentActivityItem> = {
+        status: data.success ? "success" : "failed",
+        summary: data.success ? `${label} completed` : `${label} failed`,
+        message: `${data.input_tokens.toLocaleString()} in / ${data.output_tokens.toLocaleString()} out`,
+        endedAt: Date.now(),
+      };
+
+      return {
+        ...msg,
+        activities: existing
+          ? activities.map((p) => p.id === resolvedId ? { ...p, ...patch } : p)
+          : [...activities, {
+              id: resolvedId,
+              kind: "agent",
+              agent: data.agent,
+              status: patch.status ?? "success",
+              summary: patch.summary ?? `${label} completed`,
+              message: patch.message,
+              endedAt: patch.endedAt,
+            }],
+      };
+    });
+  }
+
+  function finishLatestAgentMessage(content: string, status: AgentActivityItem["status"] = "success") {
+    updateLatestAgentMessage((msg) => {
+      const activities = msg.activities && msg.activities.length > 0
+        ? msg.activities
+        : [{
+            id: "agent-response",
+            kind: "agent" as const,
+            agent: "orchestrator",
+            model: ORCHESTRATOR_MODEL,
+            status,
+            summary: status === "failed" ? "Agent response failed" : "Agent response completed",
+            message: status === "failed" ? content : "Response received",
+            endedAt: Date.now(),
+          }];
+
+      return {
+        ...msg,
+        content,
+        activities,
+        isStreaming: false,
+      };
     });
   }
 
@@ -502,45 +589,25 @@ export default function ChatPanel({
           handleActivityStart(evt.data);
         } else if (evt.type === "activity_end") {
           handleActivityEnd(evt.data);
+        } else if (evt.type === "agent_call") {
+          handleAgentCall(evt.data);
+        } else if (evt.type === "agent_result") {
+          handleAgentResult(evt.data);
         } else if (evt.type === "usage") {
           onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
         } else if (evt.type === "reply") {
           onSessionIdSet(evt.data.session_id);
-          onMessagesChange((prev: ChatMessage[]) => {
-            const msgs = [...prev];
-            msgs[msgs.length - 1] = {
-              ...msgs[msgs.length - 1],
-              content: evt.data.content,
-              isStreaming: false,
-            };
-            return msgs;
-          });
+          finishLatestAgentMessage(evt.data.content);
           const lower = evt.data.content.toLowerCase();
           if (lower.includes("succeeded") || lower.includes("deployed") || lower.includes("created")) {
             onDeploymentComplete();
           }
         } else if (evt.type === "error") {
-          onMessagesChange((prev: ChatMessage[]) => {
-            const msgs = [...prev];
-            msgs[msgs.length - 1] = {
-              ...msgs[msgs.length - 1],
-              content: `Error: ${evt.data.message}`,
-              isStreaming: false,
-            };
-            return msgs;
-          });
+          finishLatestAgentMessage(`Error: ${evt.data.message}`, "failed");
         }
       }
     } catch (err) {
-      onMessagesChange((prev: ChatMessage[]) => {
-        const msgs = [...prev];
-        msgs[msgs.length - 1] = {
-          ...msgs[msgs.length - 1],
-          content: `Error: ${(err as Error).message}`,
-          isStreaming: false,
-        };
-        return msgs;
-      });
+      finishLatestAgentMessage(`Error: ${(err as Error).message}`, "failed");
     } finally {
       setLoading(false);
     }
@@ -602,6 +669,10 @@ export default function ChatPanel({
           handleActivityStart(evt.data);
         } else if (evt.type === "activity_end") {
           handleActivityEnd(evt.data);
+        } else if (evt.type === "agent_call") {
+          handleAgentCall(evt.data);
+        } else if (evt.type === "agent_result") {
+          handleAgentResult(evt.data);
         } else if (evt.type === "question") {
           appendQuestion({
             questionId: evt.data.question_id,
@@ -637,15 +708,7 @@ export default function ChatPanel({
             return msgs;
           });
         } else if (evt.type === "reply") {
-          onMessagesChange((prev) => {
-            const msgs = [...prev];
-            msgs[msgs.length - 1] = {
-              ...msgs[msgs.length - 1],
-              content: evt.data.content,
-              isStreaming: false,
-            };
-            return msgs;
-          });
+          finishLatestAgentMessage(evt.data.content);
         } else if (evt.type === "usage") {
           onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
         }
@@ -726,16 +789,12 @@ export default function ChatPanel({
           handleActivityStart(evt.data);
         } else if (evt.type === "activity_end") {
           handleActivityEnd(evt.data);
+        } else if (evt.type === "agent_call") {
+          handleAgentCall(evt.data);
+        } else if (evt.type === "agent_result") {
+          handleAgentResult(evt.data);
         } else if (evt.type === "reply") {
-          onMessagesChange((prev) => {
-            const msgs = [...prev];
-            msgs[msgs.length - 1] = {
-              ...msgs[msgs.length - 1],
-              content: evt.data.content,
-              isStreaming: false,
-            };
-            return msgs;
-          });
+          finishLatestAgentMessage(evt.data.content);
           onDeploymentComplete();
         } else if (evt.type === "usage") {
           onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });

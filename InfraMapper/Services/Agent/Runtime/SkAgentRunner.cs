@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Agents;
+using Microsoft.SemanticKernel.Connectors.AzureOpenAI;
 
 namespace InfraMapper.Services.Agent.Runtime;
 
@@ -50,7 +51,7 @@ public sealed class SkAgentRunner
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                channel.Writer.TryWrite(new AgentStreamEvent.Error($"Foundry/Semantic Kernel agent call timed out after {GetTimeout().TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
+                channel.Writer.TryWrite(new AgentStreamEvent.Error($"OpenAI/Semantic Kernel agent call timed out after {GetTimeout().TotalSeconds:0} seconds. The deployment may be throttled or stuck in tool-calling."));
             }
             catch (Exception ex)
             {
@@ -94,14 +95,13 @@ public sealed class SkAgentRunner
 
     internal static KernelArguments BuildArguments()
     {
-        var settings = new PromptExecutionSettings
+        var settings = new AzureOpenAIPromptExecutionSettings
         {
             FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(
                 autoInvoke: true,
                 options: new FunctionChoiceBehaviorOptions
                 {
-                    AllowConcurrentInvocation = false,
-                    AllowParallelCalls = false
+                    AllowConcurrentInvocation = false
                 })
         };
 
@@ -122,7 +122,7 @@ public sealed class SkAgentRunner
         var message = ex.Message;
         return message.Contains("429", StringComparison.OrdinalIgnoreCase) ||
                message.Contains("too_many_requests", StringComparison.OrdinalIgnoreCase)
-            ? "Foundry model rate limit hit (HTTP 429). Wait a minute or raise deployment quota."
+            ? "OpenAI model rate limit hit (HTTP 429). Wait a minute or raise model quota."
             : message;
     }
 

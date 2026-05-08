@@ -11,6 +11,8 @@ public sealed class ConversationStore
 {
     public sealed record SessionEntry(
         ChatCompletionAgent Agent,
+        OrchestratorPlugin Orchestrator,
+        ExecutorTools ExecutorTools,
         SkAgentSession Session,
         DateTimeOffset LastAccessed);
 
@@ -94,6 +96,9 @@ public sealed class ConversationStore
         var investigator = _investigatorAgent.Build(new OrchestratorPluginClarifier(_runner, investigatorQuestioner, "investigator"));
         var (planner, plannerTools) = _plannerAgent.BuildForSession(sessionId, new OrchestratorPluginClarifier(_runner, plannerQuestioner, "planner"));
         var critic = _criticAgent.BuildForSession(clarificationPlugin: new OrchestratorPluginClarifier(_runner, criticQuestioner, "critic"));
+        var executorTools = new ExecutorTools(
+            _deploymentService, _approvalService, _mutationApprovals,
+            _genericResources, _planStore, sessionId, subscriptionId);
         var executor = _executorAgent.BuildForSession(sessionId, subscriptionId, new OrchestratorPluginClarifier(_runner, executorQuestioner, "executor"));
         var reflector = _reflectorAgent.Build(new OrchestratorPluginClarifier(_runner, reflectorQuestioner, "reflector"));
 
@@ -117,7 +122,7 @@ public sealed class ConversationStore
             (orcTools, "azure"));
 
         var session = new SkAgentSession();
-        var entry = new SessionEntry(agent, session, DateTimeOffset.UtcNow);
+        var entry = new SessionEntry(agent, orchestratorPlugin, executorTools, session, DateTimeOffset.UtcNow);
 
         // Use AddOrUpdate to handle the rare case of concurrent first requests.
         var stored = _sessions.AddOrUpdate(sessionId, entry, (_, existing2) =>
