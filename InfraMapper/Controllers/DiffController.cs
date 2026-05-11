@@ -10,12 +10,10 @@ namespace InfraMapper.Controllers;
 public class DiffController : ControllerBase
 {
     private readonly DiffService _diffService;
-    private readonly InfraIntentCompiler _intentCompiler;
 
-    public DiffController(DiffService diffService, InfraIntentCompiler intentCompiler)
+    public DiffController(DiffService diffService)
     {
         _diffService = diffService;
-        _intentCompiler = intentCompiler;
     }
 
     [HttpPost]
@@ -32,9 +30,11 @@ public class DiffController : ControllerBase
         DesiredStateSpec desired;
         try
         {
-            desired = InfraIntentCompiler.LooksLikeIntent(desiredJson)
-                ? _intentCompiler.Compile(desiredJson.Deserialize<InfraIntentSpec>(JsonOpts)!, subscriptionId).DesiredState
-                : desiredJson.Deserialize<DesiredStateSpec>(JsonOpts)!;
+            if (InfraIntentCompiler.LooksLikeIntent(desiredJson))
+                return BadRequest("Intent JSON is no longer accepted here. Send a DesiredStateSpec; intent flows run through the agent and its read tools.");
+
+            desired = desiredJson.Deserialize<DesiredStateSpec>(JsonOpts)
+                ?? throw new InvalidOperationException("Desired state JSON is empty.");
         }
         catch (Exception ex)
         {

@@ -15,7 +15,6 @@ public class DevOpsExecuteController : ControllerBase
     private readonly AzureDevOpsService _ado;
     private readonly DiffService _diff;
     private readonly AgentService _agent;
-    private readonly InfraIntentCompiler _intentCompiler;
     private readonly IArmDeploymentService _deploymentService;
     private readonly ILogger<DevOpsExecuteController> _logger;
 
@@ -23,14 +22,12 @@ public class DevOpsExecuteController : ControllerBase
         AzureDevOpsService ado,
         DiffService diff,
         AgentService agent,
-        InfraIntentCompiler intentCompiler,
         IArmDeploymentService deploymentService,
         ILogger<DevOpsExecuteController> logger)
     {
         _ado = ado;
         _diff = diff;
         _agent = agent;
-        _intentCompiler = intentCompiler;
         _deploymentService = deploymentService;
         _logger = logger;
     }

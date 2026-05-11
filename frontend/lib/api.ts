@@ -41,6 +41,16 @@ export async function* streamChat(
   }
 }
 
+export async function startTerminalChat(message: string, subscriptionId: string, sessionId?: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/agent/terminal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, subscriptionId, sessionId }),
+  });
+
+  if (!res.ok) throw await errorFromResponse("Agent start failed", res);
+}
+
 async function errorFromResponse(prefix: string, res: Response): Promise<Error> {
   const body = await res.text().catch(() => "");
   return new Error(body ? `${prefix}: ${body}` : `${prefix}: ${res.statusText}`);

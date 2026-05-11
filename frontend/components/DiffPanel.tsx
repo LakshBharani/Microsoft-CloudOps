@@ -96,10 +96,26 @@ interface Props {
   result: DiffResult | null;
   loading: boolean;
   error: string | null;
+  applyLoading: boolean;
+  applyStatus: string | null;
+  applyError: string | null;
   devOpsConfig: DevOpsConfig;
 }
 
-export default function DiffPanel({ subscriptionId, onDiff, onApply, onClose, onOpenSettings, result, loading, error, devOpsConfig }: Props) {
+export default function DiffPanel({
+  subscriptionId,
+  onDiff,
+  onApply,
+  onClose,
+  onOpenSettings,
+  result,
+  loading,
+  error,
+  applyLoading,
+  applyStatus,
+  applyError,
+  devOpsConfig
+}: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [editorValue, setEditorValue] = useState<string>("");
   const [showEditor, setShowEditor] = useState(false);
@@ -285,13 +301,19 @@ export default function DiffPanel({ subscriptionId, onDiff, onApply, onClose, on
         <div className="px-3 py-3 border-t border-slate-700 flex-shrink-0">
           <button
             onClick={() => onApply(result!, editorValue)}
-            className="w-full flex items-center justify-center gap-1.5 text-xs bg-green-700 hover:bg-green-600 text-white px-3 py-2 rounded transition-colors font-medium"
+            disabled={applyLoading}
+            className="w-full flex items-center justify-center gap-1.5 text-xs bg-green-700 hover:bg-green-600 disabled:bg-slate-700 disabled:text-slate-500 text-white px-3 py-2 rounded transition-colors font-medium"
           >
-            Apply {totalChanges} change{totalChanges !== 1 ? "s" : ""} via Agent
+            {applyLoading ? <RefreshCw size={12} className="animate-spin" /> : null}
+            {applyLoading ? "Starting agent..." : `Apply ${totalChanges} change${totalChanges !== 1 ? "s" : ""} via Agent`}
           </button>
-          <p className="text-[10px] text-slate-600 mt-1.5 text-center">
-            Sends the diff to the agent — you will review a plan before anything executes
-          </p>
+          {applyStatus && <p className="text-[10px] text-green-400 mt-1.5 text-center">{applyStatus}</p>}
+          {applyError && <p className="text-[10px] text-red-400 mt-1.5 text-center">{applyError}</p>}
+          {!applyStatus && !applyError && (
+            <p className="text-[10px] text-slate-600 mt-1.5 text-center">
+              Starts the agent in your terminal; plans, questions, and status appear there
+            </p>
+          )}
         </div>
       )}
     </div>

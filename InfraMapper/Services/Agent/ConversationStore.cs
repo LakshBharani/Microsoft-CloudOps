@@ -1,91 +1,73 @@
 using System.Collections.Concurrent;
-using InfraMapper.Services.Agent.Runtime;
-using InfraMapper.Services.Agent.Tools;
-using Microsoft.SemanticKernel.Agents;
 
 namespace InfraMapper.Services.Agent;
 
 public sealed class ConversationStore
 {
-    public sealed record SessionEntry(ChatCompletionAgent Agent, SkAgentSession Session, DateTimeOffset LastAccessed);
-
-    private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _sessions = new();
     private readonly ConcurrentDictionary<string, string> _pendingClarifications = new();
-    private readonly SkAgentFactory _agentFactory;
-    private readonly IServiceProvider _services;
 
-    public ConversationStore(SkAgentFactory agentFactory, IServiceProvider services)
-    {
-        _agentFactory = agentFactory;
-        _services = services;
-    }
-
-    public Task<SessionEntry> GetOrCreateAsync(string sessionId, string subscriptionId, CancellationToken ct = default)
-    {
-        if (_sessions.TryGetValue(sessionId, out var existing))
-        {
-            var refreshed = existing with { LastAccessed = DateTimeOffset.UtcNow };
-            _sessions[sessionId] = refreshed;
-            return Task.FromResult(refreshed);
-        }
-
-        var tools = ActivatorUtilities.CreateInstance<AzureCrudTools>(_services, sessionId, subscriptionId);
-        var agent = _agentFactory.Create(
-            "infra_agent",
-            BuildSystemPrompt(subscriptionId),
-            (tools, "azure"));
-
-        var entry = new SessionEntry(agent, new SkAgentSession(), DateTimeOffset.UtcNow);
-        var stored = _sessions.AddOrUpdate(sessionId, entry, (_, current) => current with { LastAccessed = DateTimeOffset.UtcNow });
-        return Task.FromResult(stored);
-    }
+    public void Touch(string sessionId) =>
+        _sessions.AddOrUpdate(sessionId, DateTimeOffset.UtcNow, (_, _) => DateTimeOffset.UtcNow);
 
     public void Evict(TimeSpan olderThan)
     {
         var cutoff = DateTimeOffset.UtcNow - olderThan;
         foreach (var kv in _sessions)
-            if (kv.Value.LastAccessed < cutoff)
+            if (kv.Value < cutoff)
                 _sessions.TryRemove(kv.Key, out _);
+
+        foreach (var kv in _pendingClarifications)
+            if (!_sessions.ContainsKey(kv.Key))
+                _pendingClarifications.TryRemove(kv.Key, out _);
     }
 
-    public void SetPendingClarification(string sessionId, string answerContext) =>
+    public void SetPendingClarification(string sessionId, string answerContext)
+    {
+        Touch(sessionId);
         _pendingClarifications.AddOrUpdate(sessionId, answerContext, (_, existing) => $"{existing}\n{answerContext}");
+    }
 
-    public string? ConsumePendingClarification(string sessionId) =>
-        _pendingClarifications.TryRemove(sessionId, out var answer) ? answer : null;
+    public string? ConsumePendingClarification(string sessionId)
+    {
+        Touch(sessionId);
+        return _pendingClarifications.TryRemove(sessionId, out var answer) ? answer : null;
+    }
 
-    private static string BuildSystemPrompt(string subscriptionId) =>
+    internal static string BuildSystemPrompt(string subscriptionId, string sessionId) =>
         $$"""
-        You are InfraMapper, a single Azure infrastructure agent for a prototype demo.
+        You are the Azure infrastructure agent for InfraMapper.
 
-        Goal:
-        - Read the user's InfraIntentSpec JSON.
-        - Inspect Azure before planning.
-        - Create a concrete plan.
-        - Execute the plan immediately.
-        - Verify the deployment/resource result.
-        - Stop after success or a clear bounded failure.
+        Use CloudOps MCP tools for complete Azure CRUD, ARM generation, validation, what-if/deployment, plans, questions, and verification.
+        Use Microsoft Azure MCP tools only for supported Azure-native inspection or service-specific helper operations.
 
-        Default subscription_id: {{subscriptionId}}
+        Required CloudOps MCP context for every CloudOps tool call:
+        - session_id: {{sessionId}}
+        - subscription_id: {{subscriptionId}}
 
         Required workflow:
-        1. Call list_resources or find_resource for the target resource group/resources.
-        2. Call create_plan with operations and deployable template_json or CRUD details.
-        3. After create_plan returns, do not wait for user approval. This prototype auto-approves plans.
-        4. For multi-resource create/update, call deploy_arm_template.
-        5. For one generic resource change, call create_or_update_resource or delete_resource.
-        6. Call get_deployment_status or get_resource to verify.
-        7. Reply with concise success/failure and exact Azure error if failed.
+        1. Inspect Azure first with CloudOps list_resource_groups, list_resources, or find_resource.
+        2. Create a concrete plan with create_plan before any Azure write.
+        3. After create_plan returns, continue immediately; prototype mode auto-approves plans.
+        4. Prefer deploy_arm_template for related or multi-resource work.
+        5. Use create_or_update_resource only for simple single-resource CRUD.
+        6. Use delete_resource only after a plan explicitly includes that delete.
+        7. Verify with get_deployment_status, get_resource, or list_resources.
+        8. Reply with concise success/failure and exact Azure error details if failed.
 
-        JSON contract:
-        - Existing InfraIntentSpec is expected: schemaVersion, intent, scope, components, constraints.
-        - Supported shortcut components: storageAccount, webApp.
-        - Supported generic component: genericResource with type, apiVersion, name, location, properties, optional sku, kindValue, tags.
-        - If required details are missing, call ask_clarifying_question with concrete options.
+        ARM generation:
+        - Generate real ARM resource definitions dynamically from Azure resource type, apiVersion, name, sku, kind, properties, dependsOn, and tags.
+        - Do not use hardcoded shortcut component builders.
+        - Do not use a generic fake resource abstraction.
+        - For unknown Azure resource types, use ARM knowledge to construct valid resource type/apiVersion/properties.
+        - Ask a clarifying question if required fields are missing.
+        - For subnet child resources, fully qualify names as vnetName/subnetName.
+        - For storage accounts, enforce lowercase alphanumeric names, 3-24 chars.
+        - For low-cost storage, use Standard_LRS and StorageV2.
 
         Safety:
-        - Maximum two execution attempts for the same failed operation.
+        - Never invent compute resources when noCompute is true.
+        - If noCompute is true, do not create Microsoft.Compute/*, Microsoft.Web/sites, Microsoft.ContainerService/*, Microsoft.Sql/*, Microsoft.DBfor*, or Microsoft.Network/publicIPAddresses.
         - Stop on authorization, quota, invalid template, missing required field, or repeated same error.
-        - No lessons, critique, reflection, sub-agents, or self-healing loops.
         """;
 }

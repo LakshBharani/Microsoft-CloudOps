@@ -18,54 +18,55 @@ public sealed class ArmDeploymentService : IArmDeploymentService
         _armClient = armClient;
     }
 
+    public async Task<ArmDeploymentApplyResult> ValidateAsync(
+        ArmDeploymentApplyInput input,
+        CancellationToken cancellationToken = default)
+    {
+        var invalid = ValidateInput(input);
+        if (invalid is not null)
+            return invalid;
+
+        try
+        {
+            var scope = BuildScope(input.SubscriptionId, input.ResourceGroupName);
+            var content = BuildContent(input, IsSubscriptionScope(input));
+            var deployment = _armClient.GetArmDeploymentResource(ResourceIdentifier.Parse($"{scope}/providers/Microsoft.Resources/deployments/{input.DeploymentName}"));
+            var operation = await deployment
+                .ValidateAsync(WaitUntil.Completed, content, cancellationToken)
+                .ConfigureAwait(false);
+
+            var result = operation.Value;
+            if (result.Error is not null)
+                return Fail(
+                    scope,
+                    input.DeploymentName,
+                    (int)HttpStatusCode.BadRequest,
+                    result.Error.Message ?? result.Error.Code ?? "ARM template validation failed.",
+                    result.Error.Code);
+
+            return new ArmDeploymentApplyResult
+            {
+                Succeeded = true,
+                DeploymentName = input.DeploymentName,
+                Scope = scope,
+                ProvisioningState = result.Properties?.ProvisioningState?.ToString()
+            };
+        }
+        catch (RequestFailedException ex)
+        {
+            return Fail(BuildScope(input.SubscriptionId, input.ResourceGroupName), input.DeploymentName, ex.Status, ex.Message, ex.ErrorCode);
+        }
+    }
+
     public async Task<ArmDeploymentApplyResult> CreateOrUpdateAsync(
         ArmDeploymentApplyInput input,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(input.SubscriptionId))
-            return Fail(null, null, null, "SubscriptionId is required.");
+        var invalid = ValidateInput(input);
+        if (invalid is not null)
+            return invalid;
 
-        if (string.IsNullOrWhiteSpace(input.DeploymentName))
-            return Fail(null, null, null, "DeploymentName is required.");
-
-        if (string.IsNullOrWhiteSpace(input.TemplateJson))
-            return Fail(null, null, null, "TemplateJson is required.");
-
-        try
-        {
-            using var _ = JsonDocument.Parse(input.TemplateJson);
-        }
-        catch (JsonException ex)
-        {
-            return Fail(null, null, null, $"TemplateJson is not valid JSON: {ex.Message}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(input.ParametersJson))
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(input.ParametersJson);
-                if (doc.RootElement.ValueKind != JsonValueKind.Object)
-                    return Fail(null, null, null, "ParametersJson must be a JSON object.");
-            }
-            catch (JsonException ex)
-            {
-                return Fail(null, null, null, $"ParametersJson is not valid JSON: {ex.Message}");
-            }
-        }
-
-        var mode = ParseMode(input.Mode);
-        var props = new ArmDeploymentProperties(mode)
-        {
-            Template = BinaryData.FromString(input.TemplateJson)
-        };
-
-        if (!string.IsNullOrWhiteSpace(input.ParametersJson))
-            props.Parameters = BinaryData.FromString(input.ParametersJson);
-
-        var content = new ArmDeploymentContent(props);
-        if (!string.IsNullOrWhiteSpace(input.Location))
-            content.Location = new AzureLocation(input.Location);
+        var content = BuildContent(input, IsSubscriptionScope(input));
 
         var wait = input.WaitForCompletion ? WaitUntil.Completed : WaitUntil.Started;
 
@@ -169,6 +170,68 @@ public sealed class ArmDeploymentService : IArmDeploymentService
             return ArmDeploymentMode.Complete;
         return ArmDeploymentMode.Incremental;
     }
+
+    private static ArmDeploymentApplyResult? ValidateInput(ArmDeploymentApplyInput input)
+    {
+        if (string.IsNullOrWhiteSpace(input.SubscriptionId))
+            return Fail(null, null, null, "SubscriptionId is required.");
+
+        if (string.IsNullOrWhiteSpace(input.DeploymentName))
+            return Fail(null, null, null, "DeploymentName is required.");
+
+        if (string.IsNullOrWhiteSpace(input.TemplateJson))
+            return Fail(null, null, null, "TemplateJson is required.");
+
+        try
+        {
+            using var _ = JsonDocument.Parse(input.TemplateJson);
+        }
+        catch (JsonException ex)
+        {
+            return Fail(null, null, null, $"TemplateJson is not valid JSON: {ex.Message}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(input.ParametersJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(input.ParametersJson);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                    return Fail(null, null, null, "ParametersJson must be a JSON object.");
+            }
+            catch (JsonException ex)
+            {
+                return Fail(null, null, null, $"ParametersJson is not valid JSON: {ex.Message}");
+            }
+        }
+
+        return null;
+    }
+
+    private static ArmDeploymentContent BuildContent(ArmDeploymentApplyInput input, bool isSubscriptionScope)
+    {
+        var props = new ArmDeploymentProperties(ParseMode(input.Mode))
+        {
+            Template = BinaryData.FromString(input.TemplateJson)
+        };
+
+        if (!string.IsNullOrWhiteSpace(input.ParametersJson))
+            props.Parameters = BinaryData.FromString(input.ParametersJson);
+
+        var content = new ArmDeploymentContent(props);
+        if (isSubscriptionScope && !string.IsNullOrWhiteSpace(input.Location))
+            content.Location = new AzureLocation(input.Location);
+
+        return content;
+    }
+
+    private static bool IsSubscriptionScope(ArmDeploymentApplyInput input) =>
+        string.IsNullOrWhiteSpace(input.ResourceGroupName);
+
+    private static string BuildScope(string subscriptionId, string? resourceGroupName) =>
+        string.IsNullOrWhiteSpace(resourceGroupName)
+            ? $"/subscriptions/{subscriptionId}"
+            : $"/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}";
 
     private static ArmDeploymentApplyResult MapSuccess(string scope, ArmDeploymentResource deployment)
     {

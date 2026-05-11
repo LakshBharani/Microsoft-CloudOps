@@ -2,7 +2,6 @@ using System.ComponentModel;
 using System.Text.Json;
 using InfraMapper.Models;
 using InfraMapper.Services.Agent.Runtime;
-using Microsoft.SemanticKernel;
 
 namespace InfraMapper.Services.Agent.Tools;
 
@@ -38,22 +37,18 @@ public sealed class AzureCrudTools
         _sessionId = sessionId;
         _defaultSubscriptionId = defaultSubscriptionId;
     }
-
-    [KernelFunction("ask_clarifying_question")]
     [Description("Ask the user a targeted clarification question when required infrastructure details are missing or ambiguous.")]
     public string AskClarifyingQuestion(
         [Description("Short title for the question.")] string title,
         [Description("Specific prompt explaining what value is needed and why.")] string prompt,
-        [Description("Concrete options as JSON array. Each item should include label, value, and optional description.")] JsonElement options,
+        [Description("Concrete options array. Each item should include label, value, and optional description.")] List<Dictionary<string, object?>>? options = null,
         [Description("Recommended option value if known.")] string? default_value = null,
         [Description("Whether the user may type a custom answer.")] bool allow_custom = true)
     {
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(prompt))
             return Error("invalid_question", "title and prompt are required.");
 
-        var normalizedOptions = options.ValueKind == JsonValueKind.Array
-            ? JsonSerializer.Deserialize<object[]>(options.GetRawText()) ?? []
-            : Array.Empty<object>();
+        var normalizedOptions = options ?? [];
 
         var questionData = JsonSerializer.SerializeToElement(new
         {
@@ -85,8 +80,6 @@ public sealed class AzureCrudTools
             message = "Clarification required before continuing."
         });
     }
-
-    [KernelFunction("list_resource_groups")]
     [Description("List resource groups in the subscription.")]
     public async Task<string> ListResourceGroupsAsync(
         [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscription_id = null,
@@ -101,8 +94,6 @@ public sealed class AzureCrudTools
 
         return Ok("resource_groups", new { resource_groups = groups });
     }
-
-    [KernelFunction("list_resources")]
     [Description("List resources in a subscription or one resource group.")]
     public async Task<string> ListResourcesAsync(
         [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscription_id = null,
@@ -112,8 +103,6 @@ public sealed class AzureCrudTools
         var graph = await _resourceService.GetInfrastructureGraphSummaryAsync(Subscription(subscription_id), resource_group_name, cancellationToken);
         return Ok("resources_listed", new { nodes = graph.Nodes, edges = graph.Edges });
     }
-
-    [KernelFunction("get_resource")]
     [Description("Get one Azure resource by full ARM resource id.")]
     public async Task<string> GetResourceAsync(
         [Description("Full ARM resource id.")] string resource_id,
@@ -122,8 +111,6 @@ public sealed class AzureCrudTools
         var result = await _genericResources.GetAsync(resource_id, cancellationToken);
         return ResourceResult("resource_read", result);
     }
-
-    [KernelFunction("find_resource")]
     [Description("Find resources by name and/or type, optionally scoped to one resource group.")]
     public async Task<string> FindResourceAsync(
         [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscription_id = null,
@@ -140,29 +127,29 @@ public sealed class AzureCrudTools
 
         return Ok("resources_found", new { matches });
     }
-
-    [KernelFunction("create_plan")]
     [Description("Create and auto-approve a plan. Call before any Azure write.")]
     public string CreatePlan(
-        [Description("Short title for the plan.")] string title,
-        [Description("Operations array. Each item should include action, resource_type, resource_name, resource_group, details.")] JsonElement operations,
+        [Description("Short title for the plan.")] string title = "Azure infrastructure plan",
+        [Description("Required operations array. Each item must include action, resource_type, resource_name, resource_group, details. Never call create_plan without this array.")] List<Dictionary<string, object?>>? operations = null,
         [Description("Risk level: Low, Medium, High.")] string risk_level = "Medium",
-        [Description("Optional ARM template JSON for template deployment.")] JsonElement template_json = default,
-        [Description("Optional ARM parameters JSON.")] JsonElement parameters_json = default,
+        [Description("Optional ARM template object for template deployment.")] Dictionary<string, object?>? template_json = null,
+        [Description("Optional ARM parameters object.")] Dictionary<string, object?>? parameters_json = null,
         [Description("Optional resource group for resource-group deployment.")] string? resource_group_name = null,
         [Description("Deployment location for subscription-scope deployment.")] string? location = null,
         [Description("Optional deployment name.")] string? deployment_name = null)
     {
-        if (operations.ValueKind != JsonValueKind.Array)
+        if (operations is null)
             return Error("invalid_plan", "operations must be a JSON array.");
+        if (operations.Count == 0)
+            return Error("invalid_plan", "operations must include at least one planned change.");
 
         var planData = JsonSerializer.SerializeToElement(new
         {
             title,
-            operations = JsonSerializer.Deserialize<object[]>(operations.GetRawText()) ?? [],
+            operations,
             risk_level,
-            template_json = NormalizeJson(template_json),
-            parameters_json = NormalizeJson(parameters_json) ?? "{}",
+            template_json,
+            parameters_json = parameters_json ?? new Dictionary<string, object?>(),
             resource_group_name,
             location,
             deployment_name = string.IsNullOrWhiteSpace(deployment_name) ? $"im-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}" : deployment_name
@@ -181,31 +168,31 @@ public sealed class AzureCrudTools
             message = "Plan created and auto-approved for prototype mode. Execute it now."
         });
     }
-
-    [KernelFunction("create_or_update_resource")]
-    [Description("Create or update one Azure resource. Use only after create_plan.")]
+    [Description("Create or update one Azure ARM resource by full resource id and raw ARM fields. Use only after create_plan.")]
     public async Task<string> CreateOrUpdateResourceAsync(
-        [Description("Full ARM resource id.")] string resource_id,
+        [Description("Full ARM resource id, e.g. /subscriptions/.../resourceGroups/.../providers/Microsoft.X/type/name.")] string resourceId,
+        [Description("ARM apiVersion for the resource type. Required for model planning/audit; Azure SDK infers provider from resourceId.")] string apiVersion,
         [Description("Azure location.")] string location,
-        [Description("Resource properties JSON.")] string? properties_json = "{}",
+        [Description("Resource properties object.")] Dictionary<string, object?>? properties = null,
         [Description("Optional tags.")] Dictionary<string, string>? tags = null,
-        [Description("Optional SKU JSON.")] string? sku_json = null,
+        [Description("Optional SKU object.")] Dictionary<string, object?>? sku = null,
         [Description("Optional kind value.")] string? kind = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(apiVersion))
+            return Error("missing_api_version", "apiVersion is required.");
+
         var result = await _genericResources.CreateOrUpdateAsync(
-            resource_id,
+            resourceId,
             location,
-            properties_json,
+            JsonOrDefault(properties),
             tags,
-            sku_json,
+            JsonOrNull(sku),
             kind,
             waitForCompletion: true,
             cancellationToken);
         return ResourceResult("resource_mutated", result);
     }
-
-    [KernelFunction("delete_resource")]
     [Description("Delete one Azure resource. Use only after create_plan.")]
     public async Task<string> DeleteResourceAsync(
         [Description("Full ARM resource id.")] string resource_id,
@@ -214,39 +201,91 @@ public sealed class AzureCrudTools
         var result = await _genericResources.DeleteAsync(resource_id, waitForCompletion: true, cancellationToken);
         return ResourceResult("resource_deleted", result);
     }
-
-    [KernelFunction("deploy_arm_template")]
-    [Description("Deploy an ARM template. Use only after create_plan.")]
+    [Description("Validate and deploy an ARM template. Use only after create_plan.")]
     public async Task<string> DeployArmTemplateAsync(
-        [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscription_id = null,
-        [Description("Deployment name.")] string? deployment_name = null,
-        [Description("ARM template JSON.")] string template_json = "",
-        [Description("ARM parameters JSON. Use {} when none.")] string? parameters_json = "{}",
-        [Description("Resource group for resource-group-scoped deployment. Omit for subscription-scoped deployment.")] string? resource_group_name = null,
-        [Description("Deployment location for subscription-scoped deployment.")] string? location = null,
+        [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscriptionId = null,
+        [Description("Resource group for resource-group-scoped deployment. Omit for subscription-scoped deployment.")] string? resourceGroupName = null,
+        [Description("Deployment location for subscription-scoped deployment. Also passed through for validation metadata.")] string? location = null,
+        [Description("Deployment name.")] string? deploymentName = null,
+        [Description("ARM template object.")] Dictionary<string, object?>? template = null,
+        [Description("ARM parameters object. Use {} when none.")] Dictionary<string, object?>? parameters = null,
+        [Description("Backward-compatible alias for template. Prefer template for new calls.")] Dictionary<string, object?>? template_json = null,
+        [Description("Backward-compatible alias for parameters. Prefer parameters for new calls.")] Dictionary<string, object?>? parameters_json = null,
         [Description("Deployment mode: Incremental or Complete.")] string mode = "Incremental",
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(template_json))
-            return Error("missing_template", "template_json is required.");
+        var templateJson = JsonOrNull(template ?? template_json);
+        var parametersJson = JsonOrNull(parameters ?? parameters_json) ?? "{}";
+        resourceGroupName = string.IsNullOrWhiteSpace(resourceGroupName) ? null : resourceGroupName;
+
+        if (string.IsNullOrWhiteSpace(templateJson) && TryGetLatestPlanDeploymentDefaults(
+                out var planTemplateJson,
+                out var planParametersJson,
+                out var planResourceGroupName,
+                out var planLocation,
+                out var planDeploymentName))
+        {
+            templateJson = planTemplateJson;
+            parametersJson = string.IsNullOrWhiteSpace(parametersJson) || parametersJson == "{}"
+                ? planParametersJson
+                : parametersJson;
+            resourceGroupName ??= planResourceGroupName;
+            location ??= planLocation;
+            deploymentName = string.IsNullOrWhiteSpace(deploymentName) ? planDeploymentName : deploymentName;
+        }
+
+        if (string.IsNullOrWhiteSpace(templateJson))
+            return Error("missing_template", "template is required. The latest approved plan also does not contain template_json.");
 
         var input = new ArmDeploymentApplyInput
         {
-            SubscriptionId = Subscription(subscription_id),
-            ResourceGroupName = string.IsNullOrWhiteSpace(resource_group_name) ? null : resource_group_name,
-            DeploymentName = string.IsNullOrWhiteSpace(deployment_name) ? $"im-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}" : deployment_name,
-            TemplateJson = template_json,
-            ParametersJson = string.IsNullOrWhiteSpace(parameters_json) ? "{}" : parameters_json,
+            SubscriptionId = Subscription(subscriptionId),
+            ResourceGroupName = resourceGroupName,
+            DeploymentName = string.IsNullOrWhiteSpace(deploymentName) ? $"im-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}" : deploymentName,
+            TemplateJson = templateJson,
+            ParametersJson = string.IsNullOrWhiteSpace(parametersJson) ? "{}" : parametersJson,
             Mode = mode,
             WaitForCompletion = true,
             Location = location
         };
 
+        var validation = await _deployments.ValidateAsync(input, cancellationToken);
+        if (!validation.Succeeded)
+            return DeploymentResult(validation);
+
         var result = await _deployments.CreateOrUpdateAsync(input, cancellationToken);
         return DeploymentResult(result);
     }
 
-    [KernelFunction("get_deployment_status")]
+    private bool TryGetLatestPlanDeploymentDefaults(
+        out string? templateJson,
+        out string parametersJson,
+        out string? resourceGroupName,
+        out string? location,
+        out string? deploymentName)
+    {
+        templateJson = null;
+        parametersJson = "{}";
+        resourceGroupName = null;
+        location = null;
+        deploymentName = null;
+
+        var planId = _planStore.GetLatestApprovedForSession(_sessionId);
+        if (planId is null)
+            return false;
+
+        var planData = _planStore.GetPlanData(planId.Value);
+        if (planData is null || planData.Value.ValueKind != JsonValueKind.Object)
+            return false;
+
+        var root = planData.Value;
+        templateJson = GetRawObject(root, "template_json");
+        parametersJson = GetRawObject(root, "parameters_json") ?? "{}";
+        resourceGroupName = GetString(root, "resource_group_name");
+        location = GetString(root, "location");
+        deploymentName = GetString(root, "deployment_name");
+        return !string.IsNullOrWhiteSpace(templateJson);
+    }
     [Description("Get ARM deployment status.")]
     public async Task<string> GetDeploymentStatusAsync(
         [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscription_id = null,
@@ -268,13 +307,44 @@ public sealed class AzureCrudTools
     private string Subscription(string? subscriptionId) =>
         string.IsNullOrWhiteSpace(subscriptionId) ? _defaultSubscriptionId : subscriptionId;
 
-    private static string? NormalizeJson(JsonElement element) =>
-        element.ValueKind switch
+    private static string JsonOrDefault(object? value) =>
+        JsonOrNull(value) ?? "{}";
+
+    private static string? JsonOrNull(object? value) =>
+        value is null ? null : JsonSerializer.Serialize(value, JsonOpts);
+
+    private static string? GetRawObject(JsonElement root, string name)
+    {
+        if (!TryGetProperty(root, name, out var value))
+            return null;
+
+        return value.ValueKind switch
         {
-            JsonValueKind.Undefined or JsonValueKind.Null => null,
-            JsonValueKind.String => element.GetString(),
-            _ => element.GetRawText()
+            JsonValueKind.Object or JsonValueKind.Array => value.GetRawText(),
+            JsonValueKind.String => value.GetString(),
+            _ => null
         };
+    }
+
+    private static string? GetString(JsonElement root, string name) =>
+        TryGetProperty(root, name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static bool TryGetProperty(JsonElement root, string name, out JsonElement value)
+    {
+        foreach (var property in root.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
 
     private static string Ok(string kind, object data) => AgentResultJson.Serialize(new
     {
@@ -300,7 +370,7 @@ public sealed class AzureCrudTools
                 kind = AgentResultKinds.ToolError,
                 error = new
                 {
-                    type = Classify(result.HttpStatus, result.ErrorMessage),
+                    type = Classify(result.HttpStatus, result.ErrorMessage, result.ErrorCode),
                     message = result.ErrorMessage,
                     code = result.ErrorCode,
                     http_status = result.HttpStatus
@@ -329,7 +399,7 @@ public sealed class AzureCrudTools
                 kind = AgentResultKinds.DeploymentFailed,
                 error = new
                 {
-                    type = Classify(result.HttpStatus, result.ErrorMessage),
+                    type = Classify(result.HttpStatus, result.ErrorMessage, result.ErrorCode),
                     message = result.ErrorMessage,
                     code = result.ErrorCode,
                     http_status = result.HttpStatus
@@ -354,10 +424,11 @@ public sealed class AzureCrudTools
         catch { return json; }
     }
 
-    private static string Classify(int? status, string? message)
+    private static string Classify(int? status, string? message, string? code = null)
     {
         if (status is 401 or 403) return "authorization";
         if (status == 429) return "quota";
+        if (code?.Contains("InvalidTemplate", StringComparison.OrdinalIgnoreCase) == true) return "invalid_template";
         if (message?.Contains("quota", StringComparison.OrdinalIgnoreCase) == true) return "quota";
         if (message?.Contains("InvalidTemplate", StringComparison.OrdinalIgnoreCase) == true) return "invalid_template";
         if (status is >= 400 and < 500) return "bad_request";

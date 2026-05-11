@@ -13,18 +13,15 @@ public class DevOpsWebhookController : ControllerBase
 {
     private readonly AzureDevOpsService _ado;
     private readonly DiffService _diff;
-    private readonly InfraIntentCompiler _intentCompiler;
     private readonly ILogger<DevOpsWebhookController> _logger;
 
     public DevOpsWebhookController(
         AzureDevOpsService ado,
         DiffService diff,
-        InfraIntentCompiler intentCompiler,
         ILogger<DevOpsWebhookController> logger)
     {
         _ado = ado;
         _diff = diff;
-        _intentCompiler = intentCompiler;
         _logger = logger;
     }
 
@@ -85,13 +82,12 @@ public class DevOpsWebhookController : ControllerBase
 
         DesiredStateSpec newSpec;
         DesiredStateSpec oldSpec;
-        CompiledInfraIntent? compiled = null;
         try
         {
-            (newSpec, compiled) = ParseSpec(newJson, subscriptionId);
+            newSpec = ParseSpec(newJson);
             oldSpec = string.IsNullOrWhiteSpace(oldJson)
                 ? new DesiredStateSpec()
-                : ParseSpec(oldJson, subscriptionId).spec;
+                : ParseSpec(oldJson);
         }
         catch (Exception ex) { return BadRequest($"Could not parse infrastructure JSON: {ex.Message}"); }
 
@@ -100,7 +96,7 @@ public class DevOpsWebhookController : ControllerBase
         try { liveDiff = await _diff.ComputeAsync(subscriptionId, newSpec, ct); }
         catch (Exception ex) { return StatusCode(500, $"Diff failed: {ex.Message}"); }
 
-        var comment = BuildPrComment(prDiff, liveDiff, compiled);
+        var comment = BuildPrComment(prDiff, liveDiff);
         if (prId.HasValue)
         {
             try { await _ado.PostPrCommentAsync(WithBranch(targetBranch), prId.Value, comment, ct); }
@@ -129,36 +125,21 @@ public class DevOpsWebhookController : ControllerBase
         };
     }
 
-    private (DesiredStateSpec spec, CompiledInfraIntent? compiled) ParseSpec(string json, string subscriptionId)
+    private static DesiredStateSpec ParseSpec(string json)
     {
         using var doc = JsonDocument.Parse(json);
         if (InfraIntentCompiler.LooksLikeIntent(doc.RootElement))
-        {
-            var intent = doc.RootElement.Deserialize<InfraIntentSpec>(JsonOpts)
-                ?? throw new InvalidOperationException("Intent JSON is empty.");
-            var compiled = _intentCompiler.Compile(intent, subscriptionId);
-            return (compiled.DesiredState, compiled);
-        }
+            throw new InvalidOperationException("Intent JSON is not supported in the webhook diff path. Use the agent chat path; intent flows run through the LLM and its read tools.");
 
-        return (doc.RootElement.Deserialize<DesiredStateSpec>(JsonOpts)
-                ?? throw new InvalidOperationException("Desired state JSON is empty."),
-            null);
+        return doc.RootElement.Deserialize<DesiredStateSpec>(JsonOpts)
+            ?? throw new InvalidOperationException("Desired state JSON is empty.");
     }
 
-    private static string BuildPrComment(DiffResult prDiff, DiffResult liveDiff, CompiledInfraIntent? compiled)
+    private static string BuildPrComment(DiffResult prDiff, DiffResult liveDiff)
     {
         var sb = new StringBuilder();
         sb.AppendLine("## InfraMapper Infrastructure Review");
         sb.AppendLine();
-
-        if (compiled is not null)
-        {
-            sb.AppendLine("Agentic intent JSON detected. InfraMapper compiled components into Azure resources.");
-            sb.AppendLine();
-            foreach (var warning in compiled.Warnings)
-                sb.AppendLine($"- Warning: {warning}");
-            if (compiled.Warnings.Count > 0) sb.AppendLine();
-        }
 
         int total = prDiff.ToCreate.Count + prDiff.ToUpdate.Count + prDiff.ToDelete.Count;
         if (total == 0)

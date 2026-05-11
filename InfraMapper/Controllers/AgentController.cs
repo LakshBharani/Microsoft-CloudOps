@@ -11,12 +11,18 @@ public sealed class AgentController : ControllerBase
     private readonly AgentService _agentService;
     private readonly PlanStore _planStore;
     private readonly QuestionStore _questionStore;
+    private readonly ILogger<AgentController> _logger;
 
-    public AgentController(AgentService agentService, PlanStore planStore, QuestionStore questionStore)
+    public AgentController(
+        AgentService agentService,
+        PlanStore planStore,
+        QuestionStore questionStore,
+        ILogger<AgentController> logger)
     {
         _agentService = agentService;
         _planStore = planStore;
         _questionStore = questionStore;
+        _logger = logger;
     }
 
     [HttpPost("chat")]
@@ -53,6 +59,32 @@ public sealed class AgentController : ControllerBase
             await Response.WriteAsync($"data: {evt}\n\n", cancellationToken);
             await Response.Body.FlushAsync(cancellationToken);
         }
+    }
+
+    [HttpPost("terminal")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public ActionResult StartTerminalChat([FromBody] AgentChatRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Message))
+            return BadRequest(new { error = "Message is required." });
+        if (string.IsNullOrWhiteSpace(request.SubscriptionId))
+            return BadRequest(new { error = "SubscriptionId is required." });
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _agentService.RunTerminalChatAsync(request, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Terminal agent run failed.");
+                Console.WriteLine($"InfraMapper CLI agent failed: {ex.Message}");
+            }
+        });
+
+        return Accepted(new { message = "Agent started. Go to the terminal to view status." });
     }
 
     [HttpPost("plan/{planId}/approve")]

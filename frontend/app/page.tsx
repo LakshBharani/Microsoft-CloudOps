@@ -2,12 +2,10 @@
 
 import { useState, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
-import { RefreshCw, Network, AlertCircle, GitCompare } from "lucide-react";
-import { fetchGraph, diffInfra } from "@/lib/api";
-import type { InfrastructureGraph, ResourceNode, ChatMessage, Session, DiffResult } from "@/lib/types";
+import { RefreshCw, Network, AlertCircle, GitCompare, GitBranch } from "lucide-react";
+import { fetchGraph, diffInfra, startTerminalChat } from "@/lib/api";
+import type { InfrastructureGraph, ResourceNode, DiffResult } from "@/lib/types";
 import ResourcePanel from "@/components/ResourcePanel";
-import ChatPanel from "@/components/ChatPanel";
-import SessionTabs from "@/components/SessionTabs";
 import DiffPanel from "@/components/DiffPanel";
 import DevOpsSettings, { type DevOpsConfig } from "@/components/DevOpsSettings";
 
@@ -22,27 +20,6 @@ const DEFAULT_DEVOPS_CONFIG: DevOpsConfig = {
   branch: "main",
   filePath: "infra/desired-state.json"
 };
-
-function makeId(): string {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
-  }
-
-  if (globalThis.crypto?.getRandomValues) {
-    return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-      (
-        Number(c) ^
-        (globalThis.crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (Number(c) / 4)))
-      ).toString(16)
-    );
-  }
-
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function makeSession(n: number): Session {
-  return { id: makeId(), name: `Session ${n}`, createdAt: Date.now() };
-}
 
 function summarizeIntentComponents(desiredJson?: string): string[] {
   if (!desiredJson?.trim()) return [];
@@ -80,11 +57,13 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<ResourceNode | null>(null);
-  const [contextNodes, setContextNodes] = useState<ResourceNode[]>([]);
   const [showDiff, setShowDiff] = useState(false);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
+  const [applyLoading, setApplyLoading] = useState(false);
+  const [applyStatus, setApplyStatus] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [diffStatus, setDiffStatus] = useState<Record<string, "create" | "update" | "delete">>({});
   const [devOpsConfig, setDevOpsConfig] = useState<DevOpsConfig>(DEFAULT_DEVOPS_CONFIG);
 
@@ -106,13 +85,6 @@ export default function Home() {
 
   function handleNodeClick(node: ResourceNode) {
     setSelectedNode(node);
-    setContextNodes((prev) =>
-      prev.find((n) => n.id === node.id) ? prev : [...prev, node]
-    );
-  }
-
-  function handleRemoveContext(id: string) {
-    setContextNodes((prev) => prev.filter((n) => n.id !== id));
   }
 
   async function handleRunDiff(desiredJson: string) {
@@ -135,7 +107,7 @@ export default function Home() {
     }
   }
 
-  function handleApplyDiff(result: DiffResult, desiredJson?: string) {
+  async function handleApplyDiff(result: DiffResult, desiredJson?: string) {
     // Send the original intent/desired JSON too. The diff is useful context, but intent JSON may
     // contain components the current deterministic diff/compiler cannot fully expand yet.
     const lines: string[] = [
@@ -167,27 +139,18 @@ export default function Home() {
     }
     const prompt = lines.join("\n");
 
-    setShowDiff(false);
-    setSyntheticPrompt(prompt);
+    setApplyLoading(true);
+    setApplyError(null);
+    setApplyStatus(null);
+    try {
+      await startTerminalChat(prompt, subscriptionId);
+      setApplyStatus("Agent started. Go to the terminal to view status.");
+    } catch (e) {
+      setApplyError((e as Error).message);
+    } finally {
+      setApplyLoading(false);
+    }
   }
-
-  const [syntheticPrompt, setSyntheticPrompt] = useState<string | null>(null);
-
-  const [sessions, setSessions] = useState<Session[]>(() => [makeSession(1)]);
-  const [activeSessionId, setActiveSessionId] = useState<string>(() => sessions[0].id);
-  const [sessionMessages, setSessionMessages] = useState<Map<string, ChatMessage[]>>(
-    () => new Map([[sessions[0].id, []]])
-  );
-  const [sessionTokenUsage, setSessionTokenUsage] = useState<Map<string, { input: number; output: number }>>(
-    () => new Map([[sessions[0].id, { input: 0, output: 0 }]])
-  );
-  const [sessionAgentIds, setSessionAgentIds] = useState<Map<string, string>>(
-    () => new Map([[sessions[0].id, sessions[0].id]])
-  );
-
-  const activeMessages = sessionMessages.get(activeSessionId) ?? [];
-  const activeTokenUsage = sessionTokenUsage.get(activeSessionId) ?? { input: 0, output: 0 };
-  const activeAgentSessionId = sessionAgentIds.get(activeSessionId) ?? activeSessionId;
 
   const loadGraph = useCallback(async (subId: string) => {
     if (!subId.trim()) return;
@@ -205,55 +168,6 @@ export default function Home() {
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") loadGraph(subscriptionId);
-  }
-
-  function handleNewSession() {
-    const n = sessions.length + 1;
-    const s = makeSession(n);
-    setSessions((prev) => [...prev, s]);
-    setSessionMessages((prev) => new Map(prev).set(s.id, []));
-    setSessionTokenUsage((prev) => new Map(prev).set(s.id, { input: 0, output: 0 }));
-    setSessionAgentIds((prev) => new Map(prev).set(s.id, s.id));
-    setActiveSessionId(s.id);
-  }
-
-  function handleDeleteSession(id: string) {
-    setSessions((prev) => {
-      const next = prev.filter((s) => s.id !== id);
-      if (activeSessionId === id && next.length > 0) setActiveSessionId(next[next.length - 1].id);
-      return next;
-    });
-  }
-
-  function handleRenameSession(id: string, name: string) {
-    setSessions((prev) => prev.map((s) => s.id === id ? { ...s, name } : s));
-  }
-
-  function autoNameFromFirstMessage(text: string) {
-    const name = text.trim().slice(0, 30) + (text.trim().length > 30 ? "…" : "");
-    setSessions((prev) => prev.map((s) => s.id === activeSessionId ? { ...s, name } : s));
-  }
-
-  function handleMessagesChange(msgs: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) {
-    setSessionMessages((prev) => {
-      const current = prev.get(activeSessionId) ?? [];
-      const next = typeof msgs === "function" ? msgs(current) : msgs;
-      // Auto-name on first user message
-      const currentSession = sessions.find((s) => s.id === activeSessionId);
-      const firstUserMsg = next.find((m) => m.role === "user");
-      if (firstUserMsg && currentSession && /^Session \d+$/.test(currentSession.name)) {
-        autoNameFromFirstMessage(firstUserMsg.content);
-      }
-      return new Map(prev).set(activeSessionId, next);
-    });
-  }
-
-  function handleTokenUsage(u: { input: number; output: number }) {
-    setSessionTokenUsage((prev) => new Map(prev).set(activeSessionId, u));
-  }
-
-  function handleSessionIdSet(id: string) {
-    setSessionAgentIds((prev) => new Map(prev).set(activeSessionId, id));
   }
 
   return (
@@ -290,6 +204,13 @@ export default function Home() {
           >
             <GitCompare size={12} />
             Diff
+          </button>
+          <button
+            onClick={() => setShowDevOpsSettings(true)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1 rounded transition-colors border border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500"
+          >
+            <GitBranch size={12} />
+            DevOps
           </button>
         </div>
         {graph && (
@@ -332,6 +253,9 @@ export default function Home() {
               result={diffResult}
               loading={diffLoading}
               error={diffError}
+              applyLoading={applyLoading}
+              applyStatus={applyStatus}
+              applyError={applyError}
               devOpsConfig={devOpsConfig}
             />
           </div>
@@ -340,35 +264,6 @@ export default function Home() {
           {selectedNode && !showDiff && (
             <ResourcePanel node={selectedNode} onClose={() => setSelectedNode(null)} />
           )}
-        </div>
-
-        {/* Chat panel */}
-        <div className="min-w-[620px] w-[44vw] max-w-[860px] min-h-0 flex-shrink-0 flex flex-col border-l border-slate-700">
-          <SessionTabs
-            sessions={sessions}
-            activeId={activeSessionId}
-            onSelect={setActiveSessionId}
-            onNew={handleNewSession}
-            onDelete={handleDeleteSession}
-            onRename={handleRenameSession}
-          />
-          <div className="min-h-0 flex-1">
-            <ChatPanel
-              key={activeSessionId}
-              sessionId={activeAgentSessionId}
-              subscriptionId={subscriptionId}
-              messages={activeMessages}
-              onMessagesChange={handleMessagesChange}
-              onSessionIdSet={handleSessionIdSet}
-              onDeploymentComplete={() => loadGraph(subscriptionId)}
-              tokenUsage={activeTokenUsage}
-              onTokenUsage={handleTokenUsage}
-              contextNodes={contextNodes}
-              onRemoveContext={handleRemoveContext}
-              syntheticPrompt={syntheticPrompt}
-              onSyntheticPromptConsumed={() => setSyntheticPrompt(null)}
-            />
-          </div>
         </div>
       </div>
 

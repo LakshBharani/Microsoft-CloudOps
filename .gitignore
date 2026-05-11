@@ -1,3 +1,5 @@
 .claude/
 graphify-out/
 .env
+bin/
+obj/
