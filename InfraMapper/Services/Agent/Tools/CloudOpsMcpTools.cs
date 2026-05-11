@@ -205,41 +205,36 @@ public static class CloudOpsMcpTools
 
     private static string Audit(IServiceProvider services, string sessionId, string tool, Func<string> action)
     {
+        var auditStore = services.GetService<CloudOpsMcpAuditStore>();
+        var callId = auditStore?.RecordStart(sessionId, tool);
         try
         {
             var result = action();
-            var success = AgentResultParser.IsSuccessfulToolResult(result);
-            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success, ExtractMessage(result));
+            auditStore?.RecordResult(sessionId, tool, result, callId);
             return result;
         }
         catch (Exception ex)
         {
-            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success: false, ex.Message);
+            auditStore?.Record(sessionId, tool, success: false, ex.Message, callId: callId);
             throw;
         }
     }
 
     private static async Task<string> AuditAsync(IServiceProvider services, string sessionId, string tool, Func<Task<string>> action)
     {
+        var auditStore = services.GetService<CloudOpsMcpAuditStore>();
+        var callId = auditStore?.RecordStart(sessionId, tool);
         try
         {
             var result = await action();
-            var success = AgentResultParser.IsSuccessfulToolResult(result);
-            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success, ExtractMessage(result));
+            auditStore?.RecordResult(sessionId, tool, result, callId);
             return result;
         }
         catch (Exception ex)
         {
-            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success: false, ex.Message);
+            auditStore?.Record(sessionId, tool, success: false, ex.Message, callId: callId);
             throw;
         }
-    }
-
-    private static string? ExtractMessage(string result)
-    {
-        if (!AgentResultParser.TryParse(result, out var parsed))
-            return null;
-        return parsed.Message ?? parsed.Kind ?? parsed.ErrorType;
     }
 
     private static string? ValidateContext(string sessionId, string subscriptionId)

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Azure.AI.Extensions.OpenAI;
 using Azure.AI.Projects;
 using Azure.Core;
@@ -38,87 +39,141 @@ public sealed class FoundryAgentRunner : IAgentRunner
         [EnumeratorCancellation] CancellationToken ct)
     {
         var activityId = $"foundry_{Guid.NewGuid():N}";
-        yield return new AgentStreamEvent.Activity(
-            "start",
-            activityId,
-            null,
-            "agent",
-            AgentName,
-            null,
-            null,
-            "running",
-            "Calling Azure AI Foundry agent");
-
-        ResponseResult? response = null;
-        string? errorMessage = null;
-        var wasCancelled = false;
-        try
+        using var auditSubscription = _auditStore.Subscribe(sessionId);
+        using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var events = Channel.CreateUnbounded<AgentStreamEvent>(new UnboundedChannelOptions
         {
-            ct.ThrowIfCancellationRequested();
-            var projectClient = new AIProjectClient(new Uri(ProjectEndpoint), _credential);
-            var agentReference = new AgentReference(AgentName, AgentVersion);
-            ProjectResponsesClient responseClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference);
-            response = await responseClient.CreateResponseAsync(message);
-            ct.ThrowIfCancellationRequested();
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        var auditPump = Task.Run(async () =>
         {
-            wasCancelled = true;
-        }
-        catch (Exception ex)
+            try
+            {
+                await foreach (var auditEvent in auditSubscription.Events.ReadAllAsync(pumpCts.Token))
+                {
+                    if (auditEvent.Phase == "start")
+                    {
+                        await events.Writer.WriteAsync(
+                            new AgentStreamEvent.ToolCall(auditEvent.Tool, auditEvent.Id),
+                            pumpCts.Token);
+                    }
+                    else
+                    {
+                        await events.Writer.WriteAsync(
+                            new AgentStreamEvent.ToolResult(
+                                auditEvent.Tool,
+                                auditEvent.Id,
+                                auditEvent.Success == true,
+                                auditEvent.ResultJson ?? auditEvent.Message ?? ""),
+                            pumpCts.Token);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (pumpCts.IsCancellationRequested)
+            {
+            }
+        }, CancellationToken.None);
+
+        _ = Task.Run(async () =>
         {
-            _logger.LogError(ex, "Foundry agent call failed for session {SessionId}.", sessionId);
-            errorMessage = NormalizeError(ex);
-        }
+            ResponseResult? response = null;
+            string? errorMessage = null;
+            var wasCancelled = false;
 
-        if (wasCancelled)
-        {
-            yield return new AgentStreamEvent.Activity(
-                "end",
-                activityId,
-                null,
-                "agent",
-                AgentName,
-                null,
-                null,
-                "cancelled",
-                "Foundry agent call cancelled");
-            yield break;
-        }
+            try
+            {
+                await events.Writer.WriteAsync(new AgentStreamEvent.Activity(
+                    "start",
+                    activityId,
+                    null,
+                    "agent",
+                    AgentName,
+                    null,
+                    null,
+                    "running",
+                    "Calling Azure AI Foundry agent"), ct);
 
-        if (errorMessage is not null)
-        {
-            yield return new AgentStreamEvent.Activity(
-                "end",
-                activityId,
-                null,
-                "agent",
-                AgentName,
-                null,
-                null,
-                "failed",
-                "Foundry agent call failed",
-                Message: errorMessage);
-            yield return new AgentStreamEvent.Error(errorMessage);
-            yield break;
-        }
+                ct.ThrowIfCancellationRequested();
+                var projectClient = new AIProjectClient(new Uri(ProjectEndpoint), _credential);
+                var agentReference = new AgentReference(AgentName, AgentVersion);
+                ProjectResponsesClient responseClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference);
+                response = await responseClient.CreateResponseAsync(message);
+                ct.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                wasCancelled = true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Foundry agent call failed for session {SessionId}.", sessionId);
+                errorMessage = NormalizeError(ex);
+            }
 
-        yield return new AgentStreamEvent.Activity(
-            "end",
-            activityId,
-            null,
-            "agent",
-            AgentName,
-            null,
-            null,
-            "success",
-            "Foundry agent call completed");
+            try
+            {
+                if (wasCancelled)
+                {
+                    await events.Writer.WriteAsync(new AgentStreamEvent.Activity(
+                        "end",
+                        activityId,
+                        null,
+                        "agent",
+                        AgentName,
+                        null,
+                        null,
+                        "cancelled",
+                        "Foundry agent call cancelled"), CancellationToken.None);
+                    return;
+                }
 
-        var text = response?.GetOutputText() ?? "";
-        if (string.IsNullOrWhiteSpace(text))
-            text = _auditStore.BuildSummary(sessionId) ?? "";
+                if (errorMessage is not null)
+                {
+                    await events.Writer.WriteAsync(new AgentStreamEvent.Activity(
+                        "end",
+                        activityId,
+                        null,
+                        "agent",
+                        AgentName,
+                        null,
+                        null,
+                        "failed",
+                        "Foundry agent call failed",
+                        Message: errorMessage), CancellationToken.None);
+                    await events.Writer.WriteAsync(new AgentStreamEvent.Error(errorMessage), CancellationToken.None);
+                    return;
+                }
 
-        yield return new AgentStreamEvent.Done(text);
+                await Task.Delay(100, CancellationToken.None);
+                await events.Writer.WriteAsync(new AgentStreamEvent.Activity(
+                    "end",
+                    activityId,
+                    null,
+                    "agent",
+                    AgentName,
+                    null,
+                    null,
+                    "success",
+                    "Foundry agent call completed"), CancellationToken.None);
+
+                var text = response?.GetOutputText() ?? "";
+                if (string.IsNullOrWhiteSpace(text))
+                    text = _auditStore.BuildSummary(sessionId) ?? "";
+
+                await events.Writer.WriteAsync(new AgentStreamEvent.Done(text), CancellationToken.None);
+            }
+            finally
+            {
+                pumpCts.Cancel();
+                try { await auditPump; } catch { }
+                events.Writer.TryComplete();
+            }
+        }, CancellationToken.None);
+
+        await foreach (var evt in events.Reader.ReadAllAsync(ct))
+            yield return evt;
     }
 
     private string ProjectEndpoint =>

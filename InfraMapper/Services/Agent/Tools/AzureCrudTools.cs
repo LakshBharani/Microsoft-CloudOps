@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using InfraMapper.Models;
 using InfraMapper.Services.Agent.Runtime;
 
@@ -218,24 +219,32 @@ public sealed class AzureCrudTools
         var parametersJson = JsonOrNull(parameters ?? parameters_json) ?? "{}";
         resourceGroupName = string.IsNullOrWhiteSpace(resourceGroupName) ? null : resourceGroupName;
 
-        if (string.IsNullOrWhiteSpace(templateJson) && TryGetLatestPlanDeploymentDefaults(
+        if (TryGetLatestPlanDeploymentDefaults(
                 out var planTemplateJson,
                 out var planParametersJson,
                 out var planResourceGroupName,
                 out var planLocation,
-                out var planDeploymentName))
+                out var planDeploymentName,
+                out var planCreatesResourceGroup))
         {
-            templateJson = planTemplateJson;
+            if (string.IsNullOrWhiteSpace(templateJson))
+                templateJson = planTemplateJson;
             parametersJson = string.IsNullOrWhiteSpace(parametersJson) || parametersJson == "{}"
                 ? planParametersJson
                 : parametersJson;
-            resourceGroupName ??= planResourceGroupName;
+            if (!planCreatesResourceGroup)
+                resourceGroupName ??= planResourceGroupName;
             location ??= planLocation;
             deploymentName = string.IsNullOrWhiteSpace(deploymentName) ? planDeploymentName : deploymentName;
+
+            if (planCreatesResourceGroup && string.IsNullOrWhiteSpace(resourceGroupName) && !string.IsNullOrWhiteSpace(planResourceGroupName))
+                templateJson = WrapResourceGroupResourcesForSubscriptionDeployment(templateJson, planResourceGroupName, location);
         }
 
         if (string.IsNullOrWhiteSpace(templateJson))
             return Error("missing_template", "template is required. The latest approved plan also does not contain template_json.");
+
+        location ??= TryGetTemplateLocation(templateJson);
 
         var input = new ArmDeploymentApplyInput
         {
@@ -262,13 +271,15 @@ public sealed class AzureCrudTools
         out string parametersJson,
         out string? resourceGroupName,
         out string? location,
-        out string? deploymentName)
+        out string? deploymentName,
+        out bool createsResourceGroup)
     {
         templateJson = null;
         parametersJson = "{}";
         resourceGroupName = null;
         location = null;
         deploymentName = null;
+        createsResourceGroup = false;
 
         var planId = _planStore.GetLatestApprovedForSession(_sessionId);
         if (planId is null)
@@ -284,7 +295,191 @@ public sealed class AzureCrudTools
         resourceGroupName = GetString(root, "resource_group_name");
         location = GetString(root, "location");
         deploymentName = GetString(root, "deployment_name");
+        if (TryGetProperty(root, "operations", out var operations) && operations.ValueKind == JsonValueKind.Array)
+        {
+            resourceGroupName ??= GetSingleOperationString(operations, "resource_group");
+            location ??= GetSingleOperationDetailsString(operations, "location");
+            createsResourceGroup = OperationsCreateResourceGroup(operations);
+            if (createsResourceGroup)
+            {
+                resourceGroupName ??= GetCreatedResourceGroupName(operations);
+                location ??= GetCreatedResourceGroupLocation(operations);
+            }
+        }
         return !string.IsNullOrWhiteSpace(templateJson);
+    }
+
+    private static string? WrapResourceGroupResourcesForSubscriptionDeployment(
+        string? templateJson,
+        string resourceGroupName,
+        string? location)
+    {
+        if (string.IsNullOrWhiteSpace(templateJson))
+            return templateJson;
+
+        try
+        {
+            var root = JsonNode.Parse(templateJson)?.AsObject();
+            var resources = root?["resources"] as JsonArray;
+            if (root is null || resources is null)
+                return templateJson;
+
+            var subscriptionResources = new JsonArray();
+            var resourceGroupResources = new JsonArray();
+            var hasTargetResourceGroup = false;
+
+            foreach (var resource in resources)
+            {
+                if (resource is not JsonObject resourceObject)
+                    continue;
+
+                var clone = JsonNode.Parse(resourceObject.ToJsonString());
+                var type = GetNodeString(resourceObject, "type");
+                if (string.Equals(type, "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasTargetResourceGroup = hasTargetResourceGroup ||
+                        string.Equals(GetNodeString(resourceObject, "name"), resourceGroupName, StringComparison.OrdinalIgnoreCase);
+                    subscriptionResources.Add(clone);
+                }
+                else if (string.Equals(type, "Microsoft.Resources/deployments", StringComparison.OrdinalIgnoreCase))
+                {
+                    subscriptionResources.Add(clone);
+                }
+                else
+                {
+                    resourceGroupResources.Add(clone);
+                }
+            }
+
+            if (resourceGroupResources.Count == 0)
+                return templateJson;
+
+            if (!hasTargetResourceGroup)
+            {
+                subscriptionResources.Insert(0, new JsonObject
+                {
+                    ["type"] = "Microsoft.Resources/resourceGroups",
+                    ["apiVersion"] = "2022-09-01",
+                    ["name"] = resourceGroupName,
+                    ["location"] = location ?? "eastus"
+                });
+            }
+
+            subscriptionResources.Add(new JsonObject
+            {
+                ["type"] = "Microsoft.Resources/deployments",
+                ["apiVersion"] = "2022-09-01",
+                ["name"] = "deploy-resource-group-resources",
+                ["resourceGroup"] = resourceGroupName,
+                ["dependsOn"] = new JsonArray
+                {
+                    $"[resourceId('Microsoft.Resources/resourceGroups', '{resourceGroupName}')]"
+                },
+                ["properties"] = new JsonObject
+                {
+                    ["mode"] = "Incremental",
+                    ["template"] = new JsonObject
+                    {
+                        ["$schema"] = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                        ["contentVersion"] = GetNodeString(root, "contentVersion") ?? "1.0.0.0",
+                        ["resources"] = resourceGroupResources
+                    },
+                    ["parameters"] = new JsonObject()
+                }
+            });
+
+            root["resources"] = subscriptionResources;
+            return root.ToJsonString(JsonOpts);
+        }
+        catch
+        {
+            return templateJson;
+        }
+    }
+
+    private static string? TryGetTemplateLocation(string templateJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(templateJson);
+            if (!TryGetProperty(doc.RootElement, "resources", out var resources) ||
+                resources.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var resource in resources.EnumerateArray())
+            {
+                var location = GetString(resource, "location");
+                if (!string.IsNullOrWhiteSpace(location) && !location.StartsWith("[", StringComparison.Ordinal))
+                    return location;
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static string? GetSingleOperationString(JsonElement operations, string propertyName)
+    {
+        var values = operations
+            .EnumerateArray()
+            .Select(op => GetString(op, propertyName))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return values.Length == 1 ? values[0] : null;
+    }
+
+    private static string? GetSingleOperationDetailsString(JsonElement operations, string propertyName)
+    {
+        var values = operations
+            .EnumerateArray()
+            .Select(op =>
+                TryGetProperty(op, "details", out var details) && details.ValueKind == JsonValueKind.Object
+                    ? GetString(details, propertyName)
+                    : null)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return values.Length == 1 ? values[0] : null;
+    }
+
+    private static bool OperationsCreateResourceGroup(JsonElement operations) =>
+        operations.EnumerateArray().Any(op =>
+            string.Equals(GetString(op, "action"), "create", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(GetString(op, "resource_type"), "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase));
+
+    private static string? GetCreatedResourceGroupName(JsonElement operations) =>
+        operations.EnumerateArray()
+            .Where(op =>
+                string.Equals(GetString(op, "action"), "create", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(GetString(op, "resource_type"), "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase))
+            .Select(op => GetString(op, "resource_name"))
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+
+    private static string? GetCreatedResourceGroupLocation(JsonElement operations) =>
+        operations.EnumerateArray()
+            .Where(op =>
+                string.Equals(GetString(op, "action"), "create", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(GetString(op, "resource_type"), "Microsoft.Resources/resourceGroups", StringComparison.OrdinalIgnoreCase))
+            .Select(op =>
+                TryGetProperty(op, "details", out var details) && details.ValueKind == JsonValueKind.Object
+                    ? GetString(details, "location")
+                    : null)
+            .FirstOrDefault(location => !string.IsNullOrWhiteSpace(location));
+
+    private static string? GetNodeString(JsonObject root, string name)
+    {
+        foreach (var property in root)
+            if (string.Equals(property.Key, name, StringComparison.OrdinalIgnoreCase))
+                return property.Value?.GetValue<string>();
+
+        return null;
     }
     [Description("Get ARM deployment status.")]
     public async Task<string> GetDeploymentStatusAsync(

@@ -46,7 +46,7 @@ public sealed class ConversationStore
         - subscription_id: {{subscriptionId}}
 
         Required workflow:
-        1. Inspect Azure first with CloudOps list_resource_groups, list_resources, or find_resource.
+        1. Inspect Azure first with CloudOps list_resource_groups, list_resources, or find_resource - if the any resource group does not exist, first create that resource group as a step in the plan and include it in the ARM template as a nested deployment.
         2. Create a concrete plan with create_plan before any Azure write.
         3. After create_plan returns, continue immediately; prototype mode auto-approves plans.
         4. Prefer deploy_arm_template for related or multi-resource work.
