@@ -40,7 +40,7 @@ const AGENT_LABELS: Record<string, string> = {
   infra_agent: "InfraMapper Agent",
 };
 
-const INFRA_AGENT_MODEL = "gpt-5.1";
+const INFRA_AGENT_MODEL = "gpt-4.1-mini";
 
 function formatModelName(model?: string) {
   return model?.replace(/^gpt-/, "gpt ").replace(/-/g, " ");

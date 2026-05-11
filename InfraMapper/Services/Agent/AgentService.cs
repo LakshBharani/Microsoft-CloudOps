@@ -334,6 +334,12 @@ public sealed class AgentService
             Never call create_plan with empty arguments. It requires a non-empty operations array, and ARM plans must include the same ARM template object you will pass to deploy_arm_template.
             Never call deploy_arm_template without a template object containing at least contentVersion and resources.
             If Azure validation/deployment returns an error, explain it and repair the ARM once or twice if possible.
+            You must finish with a normal assistant text response after tool calls complete. Do not return an empty final message.
+            Final response must include:
+            - plan title or deployment name
+            - resources created or updated
+            - verification tool used and result
+            - any Azure error if deployment or verification failed
 
             Server pre-check warnings:
             {warnings}

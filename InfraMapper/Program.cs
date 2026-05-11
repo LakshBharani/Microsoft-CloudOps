@@ -51,6 +51,7 @@ builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<QuestionStore>();
+builder.Services.AddSingleton<CloudOpsMcpAuditStore>();
 builder.Services.AddSingleton<FoundryAgentRunner>();
 builder.Services.AddSingleton<IAgentRunner>(sp => sp.GetRequiredService<FoundryAgentRunner>());
 builder.Services.AddSingleton<ConversationStore>();

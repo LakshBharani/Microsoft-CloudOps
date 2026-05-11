@@ -109,7 +109,17 @@ public sealed class SseEventTranslator
             yield return Evt("usage", new { input_tokens = (int)totalInput, output_tokens = (int)totalOutput, session_id = _sessionId });
 
         var text = textBuilder.ToString();
-        yield return Evt("reply", new { content = text.Length > 0 ? text : "Done.", session_id = _sessionId });
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            yield return Evt("error", new
+            {
+                message = "Azure AI Foundry agent returned an empty response. Check that MCP tool calls are auto-approved or allowed for API runs, and verify the hosted agent can access CloudOpsMCP.",
+                session_id = _sessionId
+            });
+            yield break;
+        }
+
+        yield return Evt("reply", new { content = text, session_id = _sessionId });
     }
 
     private IEnumerable<string> BuildPlanEvents(string resultJson)

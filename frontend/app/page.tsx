@@ -3,11 +3,12 @@
 import { useState, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { RefreshCw, Network, AlertCircle, GitCompare, GitBranch } from "lucide-react";
-import { fetchGraph, diffInfra, startTerminalChat } from "@/lib/api";
-import type { InfrastructureGraph, ResourceNode, DiffResult } from "@/lib/types";
+import { fetchGraph } from "@/lib/api";
+import type { ChatMessage, InfrastructureGraph, ResourceNode } from "@/lib/types";
 import ResourcePanel from "@/components/ResourcePanel";
 import DiffPanel from "@/components/DiffPanel";
 import DevOpsSettings, { type DevOpsConfig } from "@/components/DevOpsSettings";
+import ChatPanel from "@/components/ChatPanel";
 
 const InfraGraph = dynamic(() => import("@/components/InfraGraph"), { ssr: false });
 
@@ -21,50 +22,19 @@ const DEFAULT_DEVOPS_CONFIG: DevOpsConfig = {
   filePath: "infra/desired-state.json"
 };
 
-function summarizeIntentComponents(desiredJson?: string): string[] {
-  if (!desiredJson?.trim()) return [];
-
-  try {
-    const spec = JSON.parse(desiredJson) as {
-      scope?: { resourceGroup?: string };
-      components?: Array<{ kind?: string; name?: string; subnets?: Array<{ name?: string }> }>;
-    };
-
-    const lines: string[] = [];
-    if (spec.scope?.resourceGroup) {
-      lines.push(`- Microsoft.Resources/resourceGroups "${spec.scope.resourceGroup}"`);
-    }
-
-    for (const component of spec.components ?? []) {
-      if (!component?.kind || !component?.name) continue;
-      lines.push(`- ${component.kind} "${component.name}"`);
-      if (component.kind.toLowerCase() === "virtualnetwork") {
-        for (const subnet of component.subnets ?? []) {
-          if (subnet?.name) lines.push(`- subnet "${subnet.name}"`);
-        }
-      }
-    }
-
-    return lines;
-  } catch {
-    return [];
-  }
-}
-
 export default function Home() {
   const [subscriptionId, setSubscriptionId] = useState(DEFAULT_SUB);
+  const [sessionId, setSessionId] = useState("cloudops-ui-session");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [tokenUsage, setTokenUsage] = useState({ input: 0, output: 0 });
+  const [chatContextNodes, setChatContextNodes] = useState<ResourceNode[]>([]);
+  const [syntheticPrompt, setSyntheticPrompt] = useState<string | null>(null);
   const [graph, setGraph] = useState<InfrastructureGraph | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<ResourceNode | null>(null);
   const [showDiff, setShowDiff] = useState(false);
-  const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [diffError, setDiffError] = useState<string | null>(null);
-  const [applyLoading, setApplyLoading] = useState(false);
-  const [applyStatus, setApplyStatus] = useState<string | null>(null);
-  const [applyError, setApplyError] = useState<string | null>(null);
-  const [diffStatus, setDiffStatus] = useState<Record<string, "create" | "update" | "delete">>({});
+  const [diffStatus] = useState<Record<string, "create" | "update" | "delete">>({});
   const [devOpsConfig, setDevOpsConfig] = useState<DevOpsConfig>(DEFAULT_DEVOPS_CONFIG);
 
   useEffect(() => {
@@ -85,71 +55,9 @@ export default function Home() {
 
   function handleNodeClick(node: ResourceNode) {
     setSelectedNode(node);
-  }
-
-  async function handleRunDiff(desiredJson: string) {
-    setDiffLoading(true);
-    setDiffError(null);
-    try {
-      const spec = JSON.parse(desiredJson);
-      const result = await diffInfra(subscriptionId, spec);
-      setDiffResult(result);
-
-      // Build diffStatus map keyed by existing ARM id for live nodes
-      const status: Record<string, "create" | "update" | "delete"> = {};
-      result.toUpdate.forEach((n) => { if (n.existingId) status[n.existingId] = "update"; });
-      result.toDelete.forEach((n) => { if (n.existingId) status[n.existingId] = "delete"; });
-      setDiffStatus(status);
-    } catch (e) {
-      setDiffError((e as Error).message);
-    } finally {
-      setDiffLoading(false);
-    }
-  }
-
-  async function handleApplyDiff(result: DiffResult, desiredJson?: string) {
-    // Send the original intent/desired JSON too. The diff is useful context, but intent JSON may
-    // contain components the current deterministic diff/compiler cannot fully expand yet.
-    const lines: string[] = [
-      "Apply the following infrastructure intent. The JSON below is the authoritative source of truth for scope, components, tags, and constraints. Every component listed in the JSON MUST appear in the plan and ARM template, even if the diff does not mention it.",
-      "The diff is REFERENCE ONLY — it shows current Azure state vs intent, but it does not define scope. Do not shrink the plan to match the diff."
-    ];
-    if (desiredJson?.trim()) {
-      lines.push("");
-      lines.push("Original infrastructure JSON (authoritative):");
-      lines.push("```json");
-      lines.push(desiredJson.trim());
-      lines.push("```");
-      lines.push("");
-    }
-    lines.push("Computed diff (reference only — current Azure state vs intent):");
-    result.toCreate.forEach((n) => lines.push(`- Create ${n.type} "${n.name}" in resource group "${n.resourceGroup}" (${n.location})`));
-    result.toUpdate.forEach((n) => {
-      const changeDesc = n.changes.map((c) => `${c.field}: ${c.from} → ${c.to}`).join(", ");
-      lines.push(`- Update ${n.type} "${n.name}": ${changeDesc}`);
-    });
-    result.toDelete.forEach((n) => lines.push(`- Delete ${n.type} "${n.name}" (id: ${n.existingId})`));
-    const intentComponents = summarizeIntentComponents(desiredJson);
-    if (intentComponents.length > 0) {
-      lines.push("");
-      lines.push("FINAL SCOPE CHECK — authoritative JSON wins over the computed diff.");
-      lines.push("The plan and ARM template MUST include every item below. If a listed item is absent from the diff, still include it:");
-      lines.push(...intentComponents);
-      lines.push("Do not end with a plan that only contains the computed diff resources.");
-    }
-    const prompt = lines.join("\n");
-
-    setApplyLoading(true);
-    setApplyError(null);
-    setApplyStatus(null);
-    try {
-      await startTerminalChat(prompt, subscriptionId);
-      setApplyStatus("Agent started. Go to the terminal to view status.");
-    } catch (e) {
-      setApplyError((e as Error).message);
-    } finally {
-      setApplyLoading(false);
-    }
+    setChatContextNodes((prev) =>
+      prev.some((item) => item.id === node.id) ? prev : [...prev, node]
+    );
   }
 
   const loadGraph = useCallback(async (subId: string) => {
@@ -246,16 +154,9 @@ export default function Home() {
           <div className={`${showDiff ? "w-80" : "hidden w-0"} min-h-0 flex-shrink-0 flex flex-col overflow-hidden border-l border-slate-700`}>
             <DiffPanel
               subscriptionId={subscriptionId}
-              onDiff={handleRunDiff}
-              onApply={handleApplyDiff}
+              onApplyToChat={(prompt) => setSyntheticPrompt(prompt)}
               onClose={() => setShowDiff(false)}
               onOpenSettings={() => setShowDevOpsSettings(true)}
-              result={diffResult}
-              loading={diffLoading}
-              error={diffError}
-              applyLoading={applyLoading}
-              applyStatus={applyStatus}
-              applyError={applyError}
               devOpsConfig={devOpsConfig}
             />
           </div>
@@ -265,6 +166,23 @@ export default function Home() {
             <ResourcePanel node={selectedNode} onClose={() => setSelectedNode(null)} />
           )}
         </div>
+
+        <aside className="min-h-0 w-[420px] flex-shrink-0 border-l border-slate-700">
+          <ChatPanel
+            sessionId={sessionId}
+            subscriptionId={subscriptionId}
+            messages={messages}
+            onMessagesChange={setMessages}
+            onSessionIdSet={setSessionId}
+            onDeploymentComplete={() => loadGraph(subscriptionId)}
+            tokenUsage={tokenUsage}
+            onTokenUsage={setTokenUsage}
+            contextNodes={chatContextNodes}
+            onRemoveContext={(id) => setChatContextNodes((prev) => prev.filter((node) => node.id !== id))}
+            syntheticPrompt={syntheticPrompt}
+            onSyntheticPromptConsumed={() => setSyntheticPrompt(null)}
+          />
+        </aside>
       </div>
 
       {showDevOpsSettings && (

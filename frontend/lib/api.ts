@@ -1,6 +1,6 @@
 import type { InfrastructureGraph, AgentStreamEvent } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5166";
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5059";
 
 export async function fetchGraph(subscriptionId: string): Promise<InfrastructureGraph> {
   const res = await fetch(`${BASE}/api/infra?subscriptionId=${subscriptionId}`);

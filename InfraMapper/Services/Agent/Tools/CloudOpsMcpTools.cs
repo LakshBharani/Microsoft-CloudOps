@@ -21,8 +21,8 @@ public static class CloudOpsMcpTools
         [Description("Whether the user may type a custom answer.")] bool allow_custom = true)
     {
         var validation = ValidateContext(session_id, subscription_id);
-        return validation ?? Create(services, session_id, subscription_id)
-            .AskClarifyingQuestion(title, prompt, options, default_value, allow_custom);
+        return validation ?? Audit(services, session_id, "ask_clarifying_question", () => Create(services, session_id, subscription_id)
+            .AskClarifyingQuestion(title, prompt, options, default_value, allow_custom));
     }
 
     [McpServerTool(Name = "list_resource_groups", ReadOnly = true)]
@@ -36,7 +36,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).ListResourceGroupsAsync(subscription_id, cancellationToken);
+            : AuditAsync(services, session_id, "list_resource_groups", () => Create(services, session_id, subscription_id).ListResourceGroupsAsync(subscription_id, cancellationToken));
     }
 
     [McpServerTool(Name = "list_resources", ReadOnly = true)]
@@ -51,7 +51,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).ListResourcesAsync(subscription_id, resource_group_name, cancellationToken);
+            : AuditAsync(services, session_id, "list_resources", () => Create(services, session_id, subscription_id).ListResourcesAsync(subscription_id, resource_group_name, cancellationToken));
     }
 
     [McpServerTool(Name = "get_resource", ReadOnly = true)]
@@ -66,7 +66,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).GetResourceAsync(resource_id, cancellationToken);
+            : AuditAsync(services, session_id, "get_resource", () => Create(services, session_id, subscription_id).GetResourceAsync(resource_id, cancellationToken));
     }
 
     [McpServerTool(Name = "find_resource", ReadOnly = true)]
@@ -83,7 +83,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).FindResourceAsync(subscription_id, resource_group_name, name, type, cancellationToken);
+            : AuditAsync(services, session_id, "find_resource", () => Create(services, session_id, subscription_id).FindResourceAsync(subscription_id, resource_group_name, name, type, cancellationToken));
     }
 
     [McpServerTool(Name = "create_plan", ReadOnly = false, Idempotent = false)]
@@ -102,8 +102,8 @@ public static class CloudOpsMcpTools
         [Description("Optional deployment name.")] string? deployment_name = null)
     {
         var validation = ValidateContext(session_id, subscription_id);
-        return validation ?? Create(services, session_id, subscription_id)
-            .CreatePlan(title, operations, risk_level, template_json, parameters_json, resource_group_name, location, deployment_name);
+        return validation ?? Audit(services, session_id, "create_plan", () => Create(services, session_id, subscription_id)
+            .CreatePlan(title, operations, risk_level, template_json, parameters_json, resource_group_name, location, deployment_name));
     }
 
     [McpServerTool(Name = "create_or_update_resource", ReadOnly = false, Idempotent = true, OpenWorld = true)]
@@ -124,7 +124,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).CreateOrUpdateResourceAsync(
+            : AuditAsync(services, session_id, "create_or_update_resource", () => Create(services, session_id, subscription_id).CreateOrUpdateResourceAsync(
                 resource_id,
                 api_version,
                 location,
@@ -132,7 +132,7 @@ public static class CloudOpsMcpTools
                 tags,
                 sku,
                 kind,
-                cancellationToken);
+                cancellationToken));
     }
 
     [McpServerTool(Name = "delete_resource", Destructive = true, ReadOnly = false, Idempotent = true, OpenWorld = true)]
@@ -147,7 +147,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).DeleteResourceAsync(resource_id, cancellationToken);
+            : AuditAsync(services, session_id, "delete_resource", () => Create(services, session_id, subscription_id).DeleteResourceAsync(resource_id, cancellationToken));
     }
 
     [McpServerTool(Name = "deploy_arm_template", ReadOnly = false, Idempotent = false, OpenWorld = true)]
@@ -167,7 +167,7 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).DeployArmTemplateAsync(
+            : AuditAsync(services, session_id, "deploy_arm_template", () => Create(services, session_id, subscription_id).DeployArmTemplateAsync(
                 subscription_id,
                 resource_group_name,
                 location,
@@ -177,7 +177,7 @@ public static class CloudOpsMcpTools
                 template_json: null,
                 parameters_json: null,
                 mode,
-                cancellationToken);
+                cancellationToken));
     }
 
     [McpServerTool(Name = "get_deployment_status", ReadOnly = true)]
@@ -193,15 +193,54 @@ public static class CloudOpsMcpTools
         var validation = ValidateContext(session_id, subscription_id);
         return validation is not null
             ? Task.FromResult(validation)
-            : Create(services, session_id, subscription_id).GetDeploymentStatusAsync(
+            : AuditAsync(services, session_id, "get_deployment_status", () => Create(services, session_id, subscription_id).GetDeploymentStatusAsync(
                 subscription_id,
                 deployment_name,
                 resource_group_name,
-                cancellationToken);
+                cancellationToken));
     }
 
     private static AzureCrudTools Create(IServiceProvider services, string sessionId, string subscriptionId) =>
         ActivatorUtilities.CreateInstance<AzureCrudTools>(services, sessionId, subscriptionId);
+
+    private static string Audit(IServiceProvider services, string sessionId, string tool, Func<string> action)
+    {
+        try
+        {
+            var result = action();
+            var success = AgentResultParser.IsSuccessfulToolResult(result);
+            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success, ExtractMessage(result));
+            return result;
+        }
+        catch (Exception ex)
+        {
+            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success: false, ex.Message);
+            throw;
+        }
+    }
+
+    private static async Task<string> AuditAsync(IServiceProvider services, string sessionId, string tool, Func<Task<string>> action)
+    {
+        try
+        {
+            var result = await action();
+            var success = AgentResultParser.IsSuccessfulToolResult(result);
+            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success, ExtractMessage(result));
+            return result;
+        }
+        catch (Exception ex)
+        {
+            services.GetService<CloudOpsMcpAuditStore>()?.Record(sessionId, tool, success: false, ex.Message);
+            throw;
+        }
+    }
+
+    private static string? ExtractMessage(string result)
+    {
+        if (!AgentResultParser.TryParse(result, out var parsed))
+            return null;
+        return parsed.Message ?? parsed.Kind ?? parsed.ErrorType;
+    }
 
     private static string? ValidateContext(string sessionId, string subscriptionId)
     {

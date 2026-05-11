@@ -17,15 +17,18 @@ public sealed class FoundryAgentRunner : IAgentRunner
     private readonly IConfiguration _configuration;
     private readonly TokenCredential _credential;
     private readonly ILogger<FoundryAgentRunner> _logger;
+    private readonly CloudOpsMcpAuditStore _auditStore;
 
     public FoundryAgentRunner(
         IConfiguration configuration,
         TokenCredential credential,
-        ILogger<FoundryAgentRunner> logger)
+        ILogger<FoundryAgentRunner> logger,
+        CloudOpsMcpAuditStore auditStore)
     {
         _configuration = configuration;
         _credential = credential;
         _logger = logger;
+        _auditStore = auditStore;
     }
 
     public async IAsyncEnumerable<AgentStreamEvent> RunStreamingAsync(
@@ -110,7 +113,12 @@ public sealed class FoundryAgentRunner : IAgentRunner
             null,
             "success",
             "Foundry agent call completed");
-        yield return new AgentStreamEvent.Done(response?.GetOutputText() ?? "");
+
+        var text = response?.GetOutputText() ?? "";
+        if (string.IsNullOrWhiteSpace(text))
+            text = _auditStore.BuildSummary(sessionId) ?? "";
+
+        yield return new AgentStreamEvent.Done(text);
     }
 
     private string ProjectEndpoint =>
