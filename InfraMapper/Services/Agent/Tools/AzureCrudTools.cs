@@ -128,10 +128,10 @@ public sealed class AzureCrudTools
 
         return Ok("resources_found", new { matches });
     }
-    [Description("Create and auto-approve a plan. Call before any Azure write.")]
+    [Description("Create a pending plan card. MANDATORY before any Azure write/update/delete. The card is shown to the user and execution blocks until the user clicks Run plan. Never reply with text-only confirmations for write/delete intents — always call this tool.")]
     public string CreatePlan(
-        [Description("Short title for the plan.")] string title = "Azure infrastructure plan",
-        [Description("Required operations array. Each item must include action, resource_type, resource_name, resource_group, details. Never call create_plan without this array.")] List<Dictionary<string, object?>>? operations = null,
+        [Description("Short one-sentence goal of the plan. Example: 'Delete unused resource group rg-im-lite'.")] string title = "Azure infrastructure plan",
+        [Description("Required operations array. Each item is an object: { action: 'Create'|'Update'|'Delete'|'Deploy', resource_type: 'Microsoft.X/Y', resource_name: '...', resource_group: '...', details: 'short one-line description of what this op does' }. action MUST be one of the four values. details is REQUIRED — keep it short and specific so the user can read the card and decide.")] List<Dictionary<string, object?>>? operations = null,
         [Description("Risk level: Low, Medium, High.")] string risk_level = "Medium",
         [Description("Optional ARM template object for template deployment.")] Dictionary<string, object?>? template_json = null,
         [Description("Optional ARM parameters object.")] Dictionary<string, object?>? parameters_json = null,
@@ -157,16 +157,15 @@ public sealed class AzureCrudTools
         }, JsonOpts);
 
         var planId = _planStore.CreatePlan(_sessionId, planData);
-        _planStore.TryApprove(planId, out _);
 
         return AgentResultJson.Serialize(new
         {
             ok = true,
             kind = AgentResultKinds.PlanCreated,
             plan_id = planId,
-            status = "auto_approved",
+            status = "pending",
             data = planData,
-            message = "Plan created and auto-approved for prototype mode. Execute it now."
+            message = "Plan created. Stop and wait for user approval. Do not call any write tools until the user resumes with 'execute approved plan'."
         });
     }
     [Description("Create or update one Azure ARM resource by full resource id and raw ARM fields. Use only after create_plan.")]

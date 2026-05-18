@@ -97,6 +97,11 @@ export async function rejectPlan(planId: string): Promise<void> {
   if (!res.ok) throw new Error(`Reject failed: ${res.statusText}`);
 }
 
+export async function resetSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/agent/session/${sessionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Reset failed: ${res.statusText}`);
+}
+
 export async function answerQuestion(questionId: string, sessionId: string, answer: string): Promise<void> {
   const res = await fetch(`${BASE}/api/agent/question/${questionId}/answer?sessionId=${sessionId}`, {
     method: "POST",

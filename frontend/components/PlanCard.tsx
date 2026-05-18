@@ -1,32 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import {
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  ListChecks,
-  Loader2,
-  ShieldCheck,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle2, Loader2, Sparkles, XCircle } from "lucide-react";
 import { approvePlan, rejectPlan } from "@/lib/api";
 import type { Plan, PlanOperation } from "@/lib/types";
 
-const ACTION_STYLES: Record<string, string> = {
-  Create: "bg-green-900 text-green-300 border-green-700",
-  Update: "bg-amber-900 text-amber-300 border-amber-700",
-  Delete: "bg-red-900 text-red-300 border-red-700",
-  Deploy: "bg-blue-900 text-blue-300 border-blue-700",
+const OP_BADGE: Record<string, string> = {
+  Create: "+ ADD",
+  Update: "~ UPDATE",
+  Delete: "- DELETE",
+  Deploy: "» DEPLOY",
 };
 
-function titleCaseAction(action: string) {
-  return action.charAt(0).toUpperCase() + action.slice(1).toLowerCase();
+function badge(action: string) {
+  const key = action.charAt(0).toUpperCase() + action.slice(1).toLowerCase();
+  return OP_BADGE[key] ?? action.toUpperCase();
 }
 
-function formatDetails(details: PlanOperation["details"]) {
-  if (!details) return "";
-  return typeof details === "string" ? details : JSON.stringify(details);
+function describeOp(op: PlanOperation) {
+  const detail = typeof op.details === "string" ? op.details : op.details ? JSON.stringify(op.details) : "";
+  const head = op.resource_name || op.resource_type;
+  return detail ? `${head} — ${detail}` : head;
 }
 
 interface Props {
@@ -37,10 +31,23 @@ interface Props {
   defaultDetailsOpen?: boolean;
 }
 
-export default function PlanCard({ plan, sessionId, onApproved, onRejected, defaultDetailsOpen = true }: Props) {
-  const [status, setStatus] = useState<"pending" | "approving" | "rejecting" | "approved" | "rejected">(plan.status ?? "pending");
-  const [detailsOpenOverride, setDetailsOpenOverride] = useState<boolean | undefined>();
-  const detailsOpen = detailsOpenOverride ?? defaultDetailsOpen;
+export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Props) {
+  const [status, setStatus] = useState<"pending" | "approving" | "rejecting" | "approved" | "rejected">(
+    plan.status === "approved" ? "approved" : plan.status === "rejected" ? "rejected" : "pending",
+  );
+  const [disabled, setDisabled] = useState<Set<number>>(new Set());
+
+  const enabledCount = plan.operations.length - disabled.size;
+
+  function toggle(i: number) {
+    if (status !== "pending") return;
+    setDisabled((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }
 
   async function handleApprove() {
     setStatus("approving");
@@ -64,116 +71,113 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected, defa
     }
   }
 
-  return (
-    <div className="mt-2 overflow-hidden rounded-lg border border-blue-800/70 bg-[#0f1117] text-xs shadow-lg shadow-black/20">
-      <div className="border-b border-blue-900/70 bg-slate-900 px-3 py-2.5">
-        <div className="flex items-start gap-2">
-          <div className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-blue-800 bg-blue-950 text-blue-300">
-            <ListChecks size={15} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className={`text-[10px] font-semibold uppercase tracking-wide ${status === "rejected" ? "text-red-300" : "text-blue-300"}`}>
-              {status === "approved" ? "Prototype plan auto-approved" : status === "rejected" ? "Plan cancelled" : "Plan ready"}
-            </div>
-            <div className="break-words font-semibold leading-snug text-slate-100">{plan.title}</div>
-          </div>
-        </div>
+  const running = status === "approving" || status === "approved";
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <div className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-semibold ${
-            plan.riskLevel === "High" ? "border-red-800 bg-red-950 text-red-300" :
-            plan.riskLevel === "Medium" ? "border-amber-800 bg-amber-950 text-amber-300" :
-            "border-green-800 bg-green-950 text-green-300"
-          }`}>
-            {plan.riskLevel} blast radius
-          </div>
-          <div className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
-            <ShieldCheck size={9} />
-            {status === "approved" ? "Auto-approved" : "Validated"}
-          </div>
-          <div className="inline-flex items-center rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
-            {plan.operations.length} operation{plan.operations.length === 1 ? "" : "s"}
-          </div>
-        </div>
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-slate-700/80 bg-[#0f172a] text-xs">
+      <div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2">
+        <Sparkles size={12} className="text-cyan-400" />
+        <span className="font-semibold uppercase tracking-wider text-cyan-300 text-[10px]">Plan</span>
+        <span className="text-slate-500 text-[10px]">
+          · {enabledCount} of {plan.operations.length} ops enabled
+        </span>
+        <span
+          className={`ml-auto rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+            plan.riskLevel === "High"
+              ? "border-red-800 bg-red-950 text-red-300"
+              : plan.riskLevel === "Medium"
+                ? "border-amber-800 bg-amber-950 text-amber-300"
+                : "border-green-800 bg-green-950 text-green-300"
+          }`}
+        >
+          {plan.riskLevel} blast
+        </span>
       </div>
 
-      <button
-        onClick={() => setDetailsOpenOverride(!detailsOpen)}
-        className="flex w-full items-center justify-between gap-2 border-b border-slate-800 bg-slate-950 px-3 py-2 text-slate-300 transition-colors hover:bg-slate-900"
-      >
-        <span className="flex items-center gap-1.5 text-[11px] font-medium">
-          {detailsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          Deployment plan
-        </span>
-        <span className="truncate font-mono text-[10px] text-slate-500">{plan.planId.slice(0, 8)}</span>
-      </button>
-
-      {detailsOpen && (
-        <div className="divide-y divide-slate-800">
-          {plan.operations.map((op: PlanOperation, i: number) => (
-            <div key={i} className="flex flex-col gap-1.5 px-3 py-2.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className={`flex-shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${ACTION_STYLES[titleCaseAction(op.action)] ?? "bg-slate-800 text-slate-300 border-slate-600"}`}>
-                  {titleCaseAction(op.action)}
-                </span>
-                <span className="truncate text-xs font-medium text-slate-100" title={op.resource_name}>{op.resource_name}</span>
-              </div>
-              <div className="break-words text-[10px] text-slate-500">{op.resource_type}</div>
-              {op.resource_group && (
-                <div className="text-[10px] text-slate-400">Group: {op.resource_group}</div>
-              )}
-              {op.details && (
-                <div className="break-words text-[10px] leading-relaxed text-slate-400">{formatDetails(op.details)}</div>
-              )}
-            </div>
-          ))}
+      {plan.title && (
+        <div className="px-3 py-2 text-[11px] leading-relaxed text-slate-200 border-b border-slate-800">
+          {plan.title}
         </div>
       )}
+
+      <div className="px-1 py-1">
+        {plan.operations.map((op, i) => {
+          const label = badge(op.action);
+          const isDisabled = disabled.has(i);
+          return (
+            <button
+              key={i}
+              onClick={() => toggle(i)}
+              disabled={status !== "pending"}
+              className={`flex w-full items-center gap-3 rounded px-2 py-1.5 text-left transition-colors ${
+                status === "pending" ? "hover:bg-slate-900/40" : ""
+              } ${isDisabled ? "opacity-40" : ""}`}
+            >
+              <span
+                className={`inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-sm border ${
+                  isDisabled
+                    ? "border-slate-600"
+                    : "border-slate-400 bg-slate-400"
+                }`}
+              >
+                {!isDisabled && (
+                  <CheckCircle2 size={9} className="text-slate-900" strokeWidth={3} />
+                )}
+              </span>
+              <span className="flex-shrink-0 font-mono text-[10px] font-semibold text-slate-500 w-[70px]">
+                {label}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300">
+                {describeOp(op)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
       {plan.criticVerdict && (
-        <div className="border-t border-slate-800 bg-slate-950/70 px-3 py-2">
-          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold text-slate-300">
-            <ShieldCheck size={11} className="text-green-400" />
-            Plan note
-          </div>
-          <div className="break-words text-[10px] leading-relaxed text-slate-400">{plan.criticVerdict}</div>
+        <div className="border-t border-slate-800 px-3 py-1.5 text-[10px] text-slate-500">
+          {plan.criticVerdict}
         </div>
       )}
-
       {plan.estimatedCostNote && (
-        <div className="border-t border-slate-700 px-3 py-1.5 text-[10px] text-amber-400">
+        <div className="border-t border-slate-800 px-3 py-1.5 text-[10px] text-amber-400">
           {plan.estimatedCostNote}
         </div>
       )}
 
-      <div className="flex gap-2 border-t border-slate-700 bg-slate-950/60 px-3 py-2.5">
-        {status === "approved" ? (
-          <div className="flex items-center gap-1.5 text-green-400">
-            <CheckCircle2 size={13} />
-            <span>Auto-approved. Agent running...</span>
-          </div>
-        ) : status === "rejected" ? (
-          <div className="flex items-center gap-1.5 text-red-400">
-            <XCircle size={13} />
-            <span>Rejected</span>
+      <div className="flex items-center justify-end gap-2 border-t border-slate-800 bg-slate-950/60 px-3 py-2">
+        {status === "rejected" ? (
+          <div className="flex items-center gap-1.5 text-red-400 text-[11px]">
+            <XCircle size={12} /> Dismissed
           </div>
         ) : (
           <>
             <button
-              onClick={handleApprove}
-              disabled={status === "approving" || status === "rejecting"}
-              className="flex items-center gap-1.5 rounded bg-green-700 px-3 py-1.5 font-medium text-white transition-colors hover:bg-green-600 disabled:bg-slate-700"
+              onClick={handleReject}
+              disabled={running || status === "rejecting"}
+              className="rounded px-3 py-1.5 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40"
             >
-              {status === "approving" ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
-              Approve and run
+              {status === "rejecting" ? "Dismissing..." : "Dismiss"}
             </button>
             <button
-              onClick={handleReject}
-              disabled={status === "approving" || status === "rejecting"}
-              className="flex items-center gap-1.5 rounded bg-slate-800 px-3 py-1.5 text-slate-300 transition-colors hover:bg-red-900 hover:text-white disabled:bg-slate-700"
+              onClick={handleApprove}
+              disabled={running || status === "rejecting" || enabledCount === 0}
+              className="inline-flex items-center gap-1.5 rounded bg-cyan-500 px-3 py-1.5 text-[11px] font-semibold text-slate-900 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-400"
             >
-              {status === "rejecting" ? <Loader2 size={11} className="animate-spin" /> : <XCircle size={11} />}
-              Cancel
+              {status === "approving" ? (
+                <>
+                  <Loader2 size={11} className="animate-spin" /> Starting...
+                </>
+              ) : status === "approved" ? (
+                <>
+                  <Loader2 size={11} className="animate-spin" /> Running...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={11} /> Run plan
+                </>
+              )}
             </button>
           </>
         )}

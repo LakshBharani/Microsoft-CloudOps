@@ -181,6 +181,13 @@ export default function Home() {
             onRemoveContext={(id) => setChatContextNodes((prev) => prev.filter((node) => node.id !== id))}
             syntheticPrompt={syntheticPrompt}
             onSyntheticPromptConsumed={() => setSyntheticPrompt(null)}
+            onResetChat={() => {
+              setMessages([]);
+              setTokenUsage({ input: 0, output: 0 });
+              setChatContextNodes([]);
+              setSyntheticPrompt(null);
+              setSessionId(`cloudops-ui-session-${Date.now().toString(36)}`);
+            }}
           />
         </aside>
       </div>

@@ -88,8 +88,7 @@ public sealed class AgentService
 
     public async IAsyncEnumerable<string> StreamAsync(
         AgentChatRequest request,
-        [EnumeratorCancellation] CancellationToken ct,
-        bool autoApprovePlan = true)
+        [EnumeratorCancellation] CancellationToken ct)
     {
         var sessionId = string.IsNullOrWhiteSpace(request.SessionId)
             ? Guid.NewGuid().ToString()
@@ -97,9 +96,40 @@ public sealed class AgentService
         _store.Touch(sessionId);
 
         var pendingClarification = _store.ConsumePendingClarification(sessionId);
+        var pendingApprovedPlanId = _store.ConsumePendingApprovedPlan(sessionId);
         var effectiveMessage = string.IsNullOrWhiteSpace(pendingClarification)
             ? request.Message
             : $"{pendingClarification}\n\nContinue with the clarified infrastructure task.";
+
+        if (pendingApprovedPlanId is Guid approvedPlanId)
+        {
+            var planData = _planStore.GetPlanData(approvedPlanId);
+            if (planData is not null)
+            {
+                var planJson = planData.Value.GetRawText();
+                var opCount = planData.Value.TryGetProperty("operations", out var opsEl) && opsEl.ValueKind == JsonValueKind.Array
+                    ? opsEl.GetArrayLength()
+                    : 0;
+                effectiveMessage = $"""
+                    The user has approved plan {approvedPlanId}. It contains exactly {opCount} operations. You MUST execute ALL {opCount} operations in order, one tool call per operation, before replying.
+
+                    Execution rules (from system prompt EXECUTE section):
+                    - Iterate every entry in operations[]. Do not skip any.
+                    - Map action → tool: Create/Update → create_or_update_resource; Delete → delete_resource; Deploy → deploy_arm_template.
+                    - If an op fails, retry once with corrected args, then continue to the NEXT op. Never abort the remaining ops because of one failure.
+                    - Do not call create_plan again.
+                    - Do not call get_deployment_status unless the plan used deploy_arm_template.
+                    - Only reply with a summary after every op has been attempted. Final reply must list: total ops, succeeded, failed (with reasons).
+
+                    Approved plan JSON:
+                    ```json
+                    {planJson}
+                    ```
+
+                    Original user resume signal: {request.Message}
+                    """;
+            }
+        }
 
         var translator = new SseEventTranslator(sessionId, _planStore);
         IAsyncEnumerable<AgentStreamEvent> stream;
@@ -123,6 +153,13 @@ public sealed class AgentService
     public void ResumeAfterPlanApproval(string sessionId, Guid planId)
     {
         _store.Touch(sessionId);
+        _store.SetPendingApprovedPlan(sessionId, planId);
+    }
+
+    public void ResetSession(string sessionId)
+    {
+        _store.ClearSession(sessionId);
+        _planStore.Clear();
     }
 
     public void ResumeAfterQuestionAnswer(string sessionId, Guid questionId, string answer)
@@ -206,7 +243,7 @@ public sealed class AgentService
             }
         }
 
-        Console.WriteLine("status: auto-approved for prototype apply");
+        Console.WriteLine("status: pending — awaiting user approval");
         Console.WriteLine();
     }
 
@@ -297,8 +334,17 @@ public sealed class AgentService
     private string BuildAgentMessage(string rawMessage, string subscriptionId, string sessionId, string? compileError)
     {
         var validation = _intentValidator.Validate(rawMessage, subscriptionId);
+        var warningBlock = string.IsNullOrWhiteSpace(compileError) ? "" : $"\n\nServer warning: {compileError}";
+
         if (!validation.IsValid)
-            return compileError is null ? rawMessage : $"{rawMessage}\n\nServer warning: {compileError}";
+        {
+            return $"""
+                {ConversationStore.BuildSystemPrompt(subscriptionId, sessionId)}
+
+                User request:
+                {rawMessage}{warningBlock}
+                """;
+        }
 
         return $"""
             {ConversationStore.BuildSystemPrompt(subscriptionId, sessionId)}
@@ -322,13 +368,13 @@ public sealed class AgentService
         return $"""
             {ConversationStore.BuildSystemPrompt(subscriptionId, sessionId)}
 
-            Generate an Azure deployment plan and execute it for this InfraIntentSpec.
+            Generate an Azure deployment plan for this InfraIntentSpec, then STOP and wait for user approval.
             Use noCompute and studentSafe constraints exactly as written.
             Prefer deploy_arm_template for multiple related resources.
             Use create_or_update_resource only for simple single-resource CRUD.
             Do not create resources outside the requested subscription, resource group, location, or component scope.
             Generate ARM resource definitions dynamically with type, apiVersion, name, sku, kind, properties, dependsOn, and tags.
-            Always inspect Azure first, create_plan before writes, execute after auto-approval, then verify with get_deployment_status or list_resources.
+            Workflow: inspect Azure first, then call create_plan (REQUIRED for any write/update/delete/deploy), then STOP. The user reviews the plan card and clicks Run plan. Only after the resume signal "execute approved plan" should you call write tools, then verify with get_deployment_status or list_resources. Never confirm via reply text — the plan card is the only approval surface.
             Before planning resources in a resource group, call list_resource_groups; if the target resource group does not exist, include a "Create Microsoft.Resources/resourceGroups <name>" operation as step 1 of the plan and emit a subscription-scope ARM template that creates the resource group and a nested deployment for its child resources.
             For ARM deployment plans, include template_json and parameters_json in create_plan, then pass the same template object to deploy_arm_template.
             Never call create_plan with empty arguments. It requires a non-empty operations array, and ARM plans must include the same ARM template object you will pass to deploy_arm_template.

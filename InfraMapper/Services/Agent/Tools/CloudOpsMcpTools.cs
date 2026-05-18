@@ -200,6 +200,39 @@ public static class CloudOpsMcpTools
                 cancellationToken));
     }
 
+    [McpServerTool(Name = "decompose_intent", ReadOnly = true)]
+    [Description("Decompose the user's request into discrete blocks before inspecting Azure. MANDATORY first tool call after reading the user's message. Returns a structured outline used to drive the rest of the workflow. Does not call Azure.")]
+    public static string DecomposeIntent(
+        IServiceProvider services,
+        [Description("InfraMapper conversation/session id. Required.")] string session_id,
+        [Description("Azure subscription id for this request. Required.")] string subscription_id,
+        [Description("One short sentence stating the overall goal of the request.")] string goal,
+        [Description("Required blocks array. Each item: { kind: 'resource'|'group'|'connection'|'verification', name: string, role: 'one short line describing what this block does', depends_on: string[] (names of other blocks). } Every meaningful piece of the request must appear as a block.")] List<Dictionary<string, object?>> blocks,
+        [Description("Risk hint based on blast radius: Low | Medium | High.")] string risk_hint = "Medium",
+        [Description("Optional one-line note about ambiguity or assumptions worth surfacing.")] string? notes = null)
+    {
+        var validation = ValidateContext(session_id, subscription_id);
+        if (validation is not null) return validation;
+        if (blocks is null || blocks.Count == 0)
+            return System.Text.Json.JsonSerializer.Serialize(new { ok = false, error_type = "invalid_decomposition", message = "blocks must include at least one entry." });
+
+        return Audit(services, session_id, "decompose_intent", () =>
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                ok = true,
+                kind = "intent_decomposed",
+                data = new
+                {
+                    goal,
+                    blocks,
+                    risk_hint,
+                    notes,
+                    block_count = blocks.Count
+                },
+                message = $"Intent decomposed into {blocks.Count} block(s). Now run INSPECT, TRACE, GROUPS, then create_plan."
+            }));
+    }
+
     private static AzureCrudTools Create(IServiceProvider services, string sessionId, string subscriptionId) =>
         ActivatorUtilities.CreateInstance<AzureCrudTools>(services, sessionId, subscriptionId);
 

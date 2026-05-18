@@ -146,7 +146,7 @@ public sealed class SseEventTranslator
             risk_level = root.TryGetProperty("risk_level", out var risk) ? risk.GetString() : "Medium",
             estimated_cost_note = (string?)null,
             revision_count = 0,
-            status = "approved",
+            status = _planStore.GetStatus(planGuid)?.ToString().ToLowerInvariant() ?? "pending",
             session_id = _sessionId
         });
     }

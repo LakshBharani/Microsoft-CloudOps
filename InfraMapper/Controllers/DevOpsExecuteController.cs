@@ -125,7 +125,7 @@ public class DevOpsExecuteController : ControllerBase
 
         try
         {
-            await foreach (var evt in _agent.StreamAsync(request, ct, autoApprovePlan: true))
+            await foreach (var evt in _agent.StreamAsync(request, ct))
             {
                 log.AppendLine(evt);
                 var doc = JsonDocument.Parse(evt);

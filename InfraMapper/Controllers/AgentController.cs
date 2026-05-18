@@ -110,6 +110,14 @@ public sealed class AgentController : ControllerBase
         return Ok(new { rejected = true });
     }
 
+    [HttpDelete("session/{sessionId}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult ResetSession(string sessionId)
+    {
+        _agentService.ResetSession(sessionId);
+        return Ok(new { reset = true });
+    }
+
     [HttpPost("question/{questionId}/answer")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

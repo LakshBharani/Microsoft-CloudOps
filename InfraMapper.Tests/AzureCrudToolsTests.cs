@@ -2,6 +2,7 @@ using System.Text.Json;
 using InfraMapper.Models;
 using InfraMapper.Services;
 using InfraMapper.Services.Agent;
+using InfraMapper.Services.Agent.Runtime;
 using InfraMapper.Services.Agent.Tools;
 using ModelContextProtocol.Server;
 
@@ -145,6 +146,69 @@ public sealed class AzureCrudToolsTests
     }
 
     [Fact]
+    public async Task DeployArmTemplateWrapsResourceGroupResourcesWhenPlanCreatesResourceGroup()
+    {
+        var deployments = new CapturingDeploymentService();
+        var planStore = new PlanStore();
+        var tools = new AzureCrudTools(null!, new CapturingGenericResourceService(), deployments, planStore, new QuestionStore(), "session-1", "sub");
+        var template = JsonSerializer.Deserialize<Dictionary<string, object?>>("""
+            {
+              "contentVersion": "1.0.0.0",
+              "resources": [
+                {
+                  "type": "Microsoft.Resources/resourceGroups",
+                  "apiVersion": "2022-09-01",
+                  "name": "rg-new",
+                  "location": "eastus"
+                },
+                {
+                  "type": "Microsoft.Storage/storageAccounts",
+                  "apiVersion": "2023-01-01",
+                  "name": "storagetest123",
+                  "location": "eastus",
+                  "sku": { "name": "Standard_LRS" },
+                  "kind": "StorageV2"
+                }
+              ]
+            }
+            """);
+
+        tools.CreatePlan(
+            title: "Create new resource group and storage",
+            operations:
+            [
+                new Dictionary<string, object?>
+                {
+                    ["action"] = "create",
+                    ["resource_type"] = "Microsoft.Resources/resourceGroups",
+                    ["resource_name"] = "rg-new",
+                    ["details"] = new Dictionary<string, object?> { ["location"] = "eastus" }
+                },
+                new Dictionary<string, object?>
+                {
+                    ["action"] = "create",
+                    ["resource_type"] = "Microsoft.Storage/storageAccounts",
+                    ["resource_name"] = "storagetest123",
+                    ["resource_group"] = "rg-new",
+                    ["details"] = new Dictionary<string, object?> { ["location"] = "eastus" }
+                }
+            ],
+            template_json: template,
+            deployment_name: "dep-rg-create");
+
+        var deployJson = await tools.DeployArmTemplateAsync();
+
+        Assert.Contains("\"ok\":true", deployJson);
+        Assert.Equal(1, deployments.ValidateCalls);
+        Assert.Equal(1, deployments.CreateCalls);
+        Assert.Null(deployments.LastInput!.ResourceGroupName);
+        Assert.Equal("eastus", deployments.LastInput.Location);
+        Assert.Contains("\"type\":\"Microsoft.Resources/deployments\"", deployments.LastInput.TemplateJson);
+        Assert.Contains("\"resourceGroup\":\"rg-new\"", deployments.LastInput.TemplateJson);
+        Assert.Contains("Microsoft.Storage/storageAccounts", deployments.LastInput.TemplateJson);
+    }
+
+    [Fact]
     public async Task DeployArmTemplateReturnsStructuredValidationErrorBeforeDeploy()
     {
         var deployments = new CapturingDeploymentService
@@ -179,6 +243,72 @@ public sealed class AzureCrudToolsTests
         Assert.Contains("\"ok\":false", json);
         Assert.Contains("\"invalid_plan\"", json);
         Assert.Contains("operations must be a JSON array", json);
+    }
+
+    [Fact]
+    public void CloudOpsMcpAuditSummaryIgnoresRecoveredDeploymentFailures()
+    {
+        var store = new CloudOpsMcpAuditStore();
+        const string sessionId = "session-1";
+
+        var planJson = AgentResultJson.Serialize(new
+        {
+            ok = true,
+            kind = AgentResultKinds.PlanCreated,
+            data = new
+            {
+                operations = new[]
+                {
+                    new
+                    {
+                        action = "create",
+                        resource_type = "Microsoft.Storage/storageAccounts",
+                        resource_name = "store123",
+                        resource_group = "rg1"
+                    },
+                    new
+                    {
+                        action = "create",
+                        resource_type = "Microsoft.Network/virtualNetworks",
+                        resource_name = "vnet1",
+                        resource_group = "rg1"
+                    }
+                }
+            },
+            message = "Plan created and auto-approved for prototype mode. Execute it now."
+        });
+        var failedDeployJson = AgentResultJson.Serialize(new
+        {
+            ok = false,
+            kind = AgentResultKinds.DeploymentFailed,
+            error = new
+            {
+                type = "invalid_template",
+                message = "Deployment template validation failed. Content: { huge azure payload }",
+                http_status = 400
+            },
+            message = "Deployment template validation failed. Content: { huge azure payload }"
+        });
+        var successfulMutateJson = AgentResultJson.Serialize(new
+        {
+            ok = true,
+            kind = "resource_mutated",
+            data = new
+            {
+                resource_id = "/subscriptions/sub/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/store123"
+            }
+        });
+
+        store.RecordResult(sessionId, "create_plan", planJson);
+        store.RecordResult(sessionId, "deploy_arm_template", failedDeployJson);
+        store.RecordResult(sessionId, "create_or_update_resource", successfulMutateJson);
+        store.RecordResult(sessionId, "list_resources", AgentResultJson.Serialize(new { ok = true, kind = "resources_listed", data = new { nodes = Array.Empty<object>() } }));
+
+        var summary = store.BuildSummary(sessionId);
+
+        Assert.Equal("Successfully implemented storage account store123, virtual network vnet1. Verification completed.", summary);
+        Assert.DoesNotContain("Deployment template validation failed", summary);
+        Assert.DoesNotContain("Content:", summary);
     }
 
     [Fact]

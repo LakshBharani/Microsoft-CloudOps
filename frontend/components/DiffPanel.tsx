@@ -207,9 +207,9 @@ export default function DiffPanel({
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 space-y-3">
+      <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 flex flex-col space-y-3">
         {/* Input area */}
-        <div className="space-y-2">
+        <div className="min-h-0 flex-1 space-y-2 flex flex-col">
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => fileRef.current?.click()}
@@ -265,8 +265,7 @@ export default function DiffPanel({
               value={editorValue}
               onChange={(e) => setEditorValue(e.target.value)}
               placeholder={starterIntentJson(subscriptionId)}
-              rows={8}
-              className="w-full bg-[#0f1117] border border-slate-700 rounded px-3 py-2 text-[11px] text-slate-300 font-mono resize-none outline-none focus:border-blue-500"
+              className="min-h-[260px] flex-1 w-full bg-[#0f1117] border border-slate-700 rounded px-3 py-2 text-[11px] text-slate-300 font-mono resize-none outline-none focus:border-blue-500"
             />
           )}
         </div>

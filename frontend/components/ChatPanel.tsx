@@ -1,18 +1,41 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Send, Bot, Wrench, CheckCircle2, XCircle, X, ChevronDown, ChevronRight, Cpu, AlertTriangle } from "lucide-react";
-import { streamChat } from "@/lib/api";
-import type { ChatMessage, ToolCall, Plan, ResourceNode, AgentActivityItem, ClarifyingQuestion, AgentStreamEvent } from "@/lib/types";
+import { useState, useRef, useEffect, useMemo } from "react";
+import {
+  Send,
+  Bot,
+  Sparkles,
+  X,
+  AtSign,
+  Paperclip,
+  Activity,
+  Terminal,
+  MessageSquare,
+  ListChecks,
+  RotateCcw,
+} from "lucide-react";
+import { streamChat, resetSession } from "@/lib/api";
+import type {
+  ChatMessage,
+  ToolCall,
+  Plan,
+  ResourceNode,
+  AgentActivityItem,
+  ClarifyingQuestion,
+  AgentStreamEvent,
+} from "@/lib/types";
 import ReactMarkdown from "react-markdown";
 import PlanCard from "./PlanCard";
 import QuestionCard from "./QuestionCard";
+import TerminalStream, { deriveLines } from "./TerminalStream";
 
 interface Props {
   sessionId: string;
   subscriptionId: string;
   messages: ChatMessage[];
-  onMessagesChange: (msgs: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
+  onMessagesChange: (
+    msgs: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
+  ) => void;
   onSessionIdSet: (id: string) => void;
   onDeploymentComplete: () => void;
   tokenUsage: { input: number; output: number };
@@ -21,26 +44,13 @@ interface Props {
   onRemoveContext?: (id: string) => void;
   syntheticPrompt?: string | null;
   onSyntheticPromptConsumed?: () => void;
+  onResetChat?: () => void;
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  list_resource_groups: "Listing resource groups",
-  list_resources: "Listing resources",
-  ask_clarifying_question: "Asking clarification",
-  get_resource: "Reading resource",
-  find_resource: "Finding resource",
-  get_deployment_status: "Checking deployment status",
-  create_plan: "Creating plan",
-  create_or_update_resource: "Creating or updating resource",
-  delete_resource: "Deleting resource",
-  deploy_arm_template: "Deploying ARM template",
-};
-
-const AGENT_LABELS: Record<string, string> = {
-  infra_agent: "InfraMapper Agent",
-};
-
 const INFRA_AGENT_MODEL = "gpt-4.1-mini";
+const USER_INITIALS = "LB";
+
+type Tab = "chat" | "plan" | "logs";
 
 function formatModelName(model?: string) {
   return model?.replace(/^gpt-/, "gpt ").replace(/-/g, " ");
@@ -48,23 +58,21 @@ function formatModelName(model?: string) {
 
 function collapsePreviousAgentRich(messages: ChatMessage[]) {
   return messages.map((msg) =>
-    msg.role === "agent" && ((msg.activities?.length ?? 0) > 0 || (msg.plans?.length ?? 0) > 0 || msg.plan)
+    msg.role === "agent" &&
+    ((msg.activities?.length ?? 0) > 0 ||
+      (msg.plans?.length ?? 0) > 0 ||
+      msg.plan)
       ? { ...msg, richCollapsed: true }
-      : msg
+      : msg,
   );
 }
 
 function cleanAgentText(value?: string) {
   return value
     ?.replace(/\*\*/g, "")
-    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F]/gu, "")
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}️]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function isOperationResult(content: string) {
-  const normalized = cleanAgentText(content.replace(/\r/g, "")) ?? "";
-  return /\b(complete|completed|succeeded|successfully|deleted|created|updated|deployed)\b/i.test(normalized);
 }
 
 function formatWorkedDuration(ms: number) {
@@ -73,114 +81,39 @@ function formatWorkedDuration(ms: number) {
 }
 
 function getWorkedDuration(msg: ChatMessage) {
-  if (msg.isStreaming || !msg.activities || msg.activities.length === 0) return null;
-
-  const startedAt = Math.min(...msg.activities.map((item) => item.startedAt ?? item.endedAt ?? Infinity));
-  const endedAt = Math.max(...msg.activities.map((item) => item.endedAt ?? item.startedAt ?? -Infinity));
-
-  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) return null;
+  if (msg.isStreaming || !msg.activities || msg.activities.length === 0)
+    return null;
+  const startedAt = Math.min(
+    ...msg.activities.map((item) => item.startedAt ?? item.endedAt ?? Infinity),
+  );
+  const endedAt = Math.max(
+    ...msg.activities.map(
+      (item) => item.endedAt ?? item.startedAt ?? -Infinity,
+    ),
+  );
+  if (
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(endedAt) ||
+    endedAt < startedAt
+  )
+    return null;
   return formatWorkedDuration(endedAt - startedAt);
 }
 
-function ToolCallList({ toolCalls }: { toolCalls: ToolCall[] }) {
-  if (toolCalls.length === 0) return null;
-
+function UserBubble({ content }: { content: string }) {
   return (
-    <div className="mb-2 space-y-1 border-b border-slate-700 pb-2">
-      {toolCalls.map((tc, i) => (
-        <div key={i} className="flex items-center gap-1.5 text-[10px]">
-          {!tc.done ? (
-            <Wrench size={11} className="text-blue-400 animate-pulse flex-shrink-0" />
-          ) : tc.success === false ? (
-            <XCircle size={11} className="text-red-400 flex-shrink-0" />
-          ) : (
-            <CheckCircle2 size={11} className="text-green-500 flex-shrink-0" />
-          )}
-          <span className={tc.success === false ? "text-red-400" : "text-slate-400"}>
-            {TOOL_LABELS[tc.tool] ?? tc.tool}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ActivityTimeline({ activities, defaultOpen = true }: { activities?: AgentActivityItem[]; defaultOpen?: boolean }) {
-  const [openOverride, setOpenOverride] = useState<boolean | undefined>();
-  const open = openOverride ?? defaultOpen;
-
-  if (!activities || activities.length === 0) return null;
-
-  const roots = activities.filter((item) => !item.parentId);
-  const children = new Map<string, AgentActivityItem[]>();
-  activities.forEach((item) => {
-    if (!item.parentId) return;
-    children.set(item.parentId, [...(children.get(item.parentId) ?? []), item]);
-  });
-
-  function icon(item: AgentActivityItem) {
-    const className = "mt-0.5 shrink-0";
-    if (item.status === "running") return <Cpu size={11} className={`${className} animate-pulse text-blue-400`} />;
-    if (item.status === "failed") return <XCircle size={11} className={`${className} text-red-400`} />;
-    if (item.status === "rejected") return <AlertTriangle size={11} className={`${className} text-amber-400`} />;
-    return <CheckCircle2 size={11} className={`${className} text-green-400`} />;
-  }
-
-  function label(item: AgentActivityItem) {
-    return item.agent
-      ? (AGENT_LABELS[item.agent] ?? item.agent)
-      : item.tool
-        ? (TOOL_LABELS[item.tool] ?? item.tool)
-        : item.summary;
-  }
-
-  return (
-    <div className="mb-2 rounded border border-slate-700 bg-slate-950/40">
-      <button
-        onClick={() => setOpenOverride(!open)}
-        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[10px] text-slate-400 hover:bg-slate-900"
-      >
-        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-        <Cpu size={10} className="text-blue-400" />
-        <span>Agent at work — {activities.length} event{activities.length === 1 ? "" : "s"}</span>
-      </button>
-      {open && (
-        <div className="space-y-1 border-t border-slate-800 px-2 py-2">
-          {roots.map((item) => (
-            <div key={item.id} className="rounded border border-slate-800 bg-slate-900/40 px-2 py-1.5">
-              <div className="flex items-start gap-1.5 text-[10px]">
-                {icon(item)}
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-medium text-slate-200">{label(item)}</span>
-                    {item.model && (
-                      <span className="text-slate-500">· {formatModelName(item.model)}</span>
-                    )}
-                  </div>
-                  <div className="text-slate-500">{item.message ?? item.summary}</div>
-                  {item.errorType && <div className="text-red-300">Error: {item.errorType}</div>}
-                </div>
-              </div>
-              {(children.get(item.id) ?? []).length > 0 && (
-                <div className="mt-1.5 space-y-1 border-l border-slate-700 pl-2">
-                  {(children.get(item.id) ?? []).map((child) => (
-                    <div key={child.id} className="flex items-start gap-1.5 text-[10px] text-slate-500">
-                      {icon(child)}
-                      <div className="min-w-0 flex-1">
-                        <span className="font-medium text-slate-300">{label(child)}</span>
-                        {child.model && (
-                          <span className="ml-1 text-slate-600">· {formatModelName(child.model)}</span>
-                        )}
-                        <span className="ml-1 text-slate-500">{child.message ?? child.summary}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-gradient-to-br from-cyan-400 to-cyan-600 text-[9px] font-bold text-slate-900">
+          {USER_INITIALS}
+        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          You
+        </span>
+      </div>
+      <div className="rounded-lg border border-slate-800 bg-[#1a2234] px-3 py-2 text-xs leading-relaxed text-slate-200 break-words">
+        {content}
+      </div>
     </div>
   );
 }
@@ -198,40 +131,42 @@ function AgentMessage({
   onRejected: () => void;
   onQuestionAnswered: (questionId: string, answer: string) => void;
 }) {
-  const richOpen = msg.richCollapsed !== true;
-  const operationResult = msg.content ? isOperationResult(msg.content) : false;
   const workedDuration = getWorkedDuration(msg);
   const hasPlans = (msg.plans?.length ?? 0) > 0 || !!msg.plan;
   const hasQuestions = (msg.questions?.length ?? 0) > 0 || !!msg.question;
-  const activities = msg.activities && msg.activities.length > 0
-    ? msg.activities
-    : msg.isStreaming
-      ? [{
-          id: "stream-starting",
-          kind: "agent" as const,
-          agent: "infra_agent",
-          model: INFRA_AGENT_MODEL,
-          status: "running" as const,
-          summary: "Waiting for agent activity",
-          message: "Starting work...",
-        }]
-      : undefined;
+  const activities =
+    msg.activities && msg.activities.length > 0
+      ? msg.activities
+      : msg.isStreaming
+        ? [
+            {
+              id: "stream-starting",
+              kind: "agent" as const,
+              agent: "infra_agent",
+              model: INFRA_AGENT_MODEL,
+              status: "running" as const,
+              summary: "Reading request",
+              message: "Starting work...",
+            },
+          ]
+        : undefined;
 
   return (
-    <div className="w-full space-y-2 rounded-lg border border-slate-800 bg-[#1e293b] px-3 py-2 text-xs leading-relaxed text-slate-200">
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-300">
-        <Bot size={11} />
-        <span>InfraMapper Agent</span>
-        <span className="normal-case tracking-normal text-slate-500">· {formatModelName(INFRA_AGENT_MODEL)}</span>
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-[10px]">
+        <span className="text-cyan-400">+</span>
+        <span className="font-semibold uppercase tracking-wider text-slate-300">
+          InfraMapper
+        </span>
+        <span className="text-slate-500">◇ {formatModelName(INFRA_AGENT_MODEL)}</span>
         {workedDuration && (
-          <span className="ml-auto normal-case tracking-normal text-slate-500">Worked for {workedDuration}</span>
+          <span className="ml-auto text-slate-500">{workedDuration}</span>
         )}
       </div>
-      <div className="break-words">
-        <ActivityTimeline activities={activities} defaultOpen={richOpen} />
-        {msg.toolCalls && msg.toolCalls.length > 0 && (
-          <ToolCallList toolCalls={msg.toolCalls} />
-        )}
+
+      <div className="border-l-2 border-slate-800 pl-3">
+        <TerminalStream activities={activities} />
+
         {(msg.plans ?? (msg.plan ? [msg.plan] : [])).map((plan) => (
           <PlanCard
             key={plan.planId}
@@ -239,46 +174,78 @@ function AgentMessage({
             sessionId={sessionId}
             onApproved={onApproved}
             onRejected={onRejected}
-            defaultDetailsOpen={richOpen}
           />
         ))}
-        {(msg.questions ?? (msg.question ? [msg.question] : [])).map((question) => (
-          <QuestionCard
-            key={question.questionId}
-            question={question}
-            sessionId={sessionId}
-            onAnswered={onQuestionAnswered}
-          />
-        ))}
-        {msg.content && operationResult && !hasPlans && !hasQuestions && (
-          <div className="flex items-start gap-1.5 rounded border border-green-900/60 bg-green-950/30 px-2 py-1.5 text-[11px] text-green-100">
-            <CheckCircle2 size={12} className="mt-0.5 shrink-0 text-green-400" />
-            <span>{cleanAgentText(msg.content)}</span>
+
+        {(msg.questions ?? (msg.question ? [msg.question] : [])).map(
+          (question) => (
+            <QuestionCard
+              key={question.questionId}
+              question={question}
+              sessionId={sessionId}
+              onAnswered={onQuestionAnswered}
+            />
+          ),
+        )}
+
+        {msg.content && !hasPlans && !hasQuestions && (
+          <div className="mt-2 text-xs leading-relaxed text-slate-200">
+            <ReactMarkdown
+              components={{
+                p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                ul: ({ children }) => (
+                  <ul className="mb-1 space-y-0.5 list-disc pl-4">{children}</ul>
+                ),
+                ol: ({ children }) => (
+                  <ol className="list-decimal pl-4 mb-1">{children}</ol>
+                ),
+                li: ({ children }) => <li className="mb-0.5">{children}</li>,
+                strong: ({ children }) => (
+                  <strong className="text-white font-semibold">{children}</strong>
+                ),
+                code: ({ children }) => (
+                  <code className="bg-slate-900 px-1 rounded text-[10px] text-cyan-300 break-all">
+                    {children}
+                  </code>
+                ),
+                pre: ({ children }) => (
+                  <pre className="bg-slate-900 rounded p-2 text-[10px] text-cyan-300 overflow-x-auto whitespace-pre-wrap break-all my-1">
+                    {children}
+                  </pre>
+                ),
+              }}
+            >
+              {cleanAgentText(msg.content)}
+            </ReactMarkdown>
           </div>
         )}
-        {msg.content && !operationResult && !hasPlans && !hasQuestions && (
-          <ReactMarkdown
-            components={{
-              p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-              ul: ({ children }) => <ul className="mb-1 space-y-0.5">{children}</ul>,
-              ol: ({ children }) => <ol className="list-decimal pl-4 mb-1">{children}</ol>,
-              li: ({ children }) => <li className="mb-0.5">{children}</li>,
-              strong: ({ children }) => <strong className="text-white font-semibold">{children}</strong>,
-              code: ({ children }) => <code className="bg-slate-900 px-1 rounded text-[10px] text-blue-300 break-all">{children}</code>,
-              pre: ({ children }) => <pre className="bg-slate-900 rounded p-2 text-[10px] text-blue-300 overflow-x-auto whitespace-pre-wrap break-all my-1">{children}</pre>,
-              table: ({ children }) => <table className="border-collapse w-full my-2 text-[11px]">{children}</table>,
-              thead: ({ children }) => <thead className="bg-slate-800">{children}</thead>,
-              th: ({ children }) => <th className="border border-slate-600 px-2 py-1 text-left text-slate-300">{children}</th>,
-              td: ({ children }) => <td className="border border-slate-600 px-2 py-1">{children}</td>,
-            }}
-          >
-            {cleanAgentText(msg.content)}
-          </ReactMarkdown>
-        )}
-        {msg.isStreaming && !msg.content && !msg.plan && (
-          <span className="text-slate-500 italic text-[10px]">Thinking...</span>
-        )}
       </div>
+    </div>
+  );
+}
+
+function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void }) {
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "chat", label: "Chat", icon: <MessageSquare size={11} /> },
+    { id: "plan", label: "Plan", icon: <ListChecks size={11} /> },
+    { id: "logs", label: "Logs", icon: <Terminal size={11} /> },
+  ];
+  return (
+    <div className="flex items-center gap-1 px-2 py-1.5">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          onClick={() => onChange(t.id)}
+          className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+            active === t.id
+              ? "bg-slate-800 text-cyan-300"
+              : "text-slate-500 hover:text-slate-300"
+          }`}
+        >
+          {t.icon}
+          {t.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -296,28 +263,36 @@ export default function ChatPanel({
   onRemoveContext,
   syntheticPrompt,
   onSyntheticPromptConsumed,
+  onResetChat,
 }: Props) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("chat");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  function updateLatestAgentMessage(patchMessage: (msg: ChatMessage) => ChatMessage) {
+  function updateLatestAgentMessage(
+    patchMessage: (msg: ChatMessage) => ChatMessage,
+  ) {
     onMessagesChange((prev: ChatMessage[]) => {
       const msgs = [...prev];
       let index = -1;
-
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === "agent" && (msgs[i].isStreaming || index < 0)) {
           index = i;
           if (msgs[i].isStreaming) break;
         }
       }
-
       if (index < 0) {
-        msgs.push({ role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false });
+        msgs.push({
+          role: "agent",
+          content: "",
+          toolCalls: [],
+          isStreaming: true,
+          richCollapsed: false,
+        });
         index = msgs.length - 1;
       }
-
       msgs[index] = patchMessage(msgs[index]);
       return msgs;
     });
@@ -330,13 +305,19 @@ export default function ChatPanel({
       return {
         ...msg,
         activities: existing
-          ? activities.map((p) => p.id === item.id ? { ...p, ...item, startedAt: p.startedAt ?? item.startedAt } : p)
+          ? activities.map((p) =>
+              p.id === item.id
+                ? { ...p, ...item, startedAt: p.startedAt ?? item.startedAt }
+                : p,
+            )
           : [...activities, item],
       };
     });
   }
 
-  function handleActivityStart(data: Extract<AgentStreamEvent, { type: "activity_start" }>["data"]) {
+  function handleActivityStart(
+    data: Extract<AgentStreamEvent, { type: "activity_start" }>["data"],
+  ) {
     upsertActivity({
       id: data.id,
       parentId: data.parent_id ?? undefined,
@@ -353,7 +334,9 @@ export default function ChatPanel({
     });
   }
 
-  function handleActivityEnd(data: Extract<AgentStreamEvent, { type: "activity_end" }>["data"]) {
+  function handleActivityEnd(
+    data: Extract<AgentStreamEvent, { type: "activity_end" }>["data"],
+  ) {
     updateLatestAgentMessage((msg) => {
       const activities = msg.activities ?? [];
       const existing = activities.find((p) => p.id === data.id);
@@ -382,13 +365,16 @@ export default function ChatPanel({
       return {
         ...msg,
         activities: existing
-          ? activities.map((p) => p.id === data.id ? { ...p, ...patch } : p)
+          ? activities.map((p) => (p.id === data.id ? { ...p, ...patch } : p))
           : [...activities, fallback],
       };
     });
+    if (data.tool) onDeploymentComplete();
   }
 
-  function handleAgentCall(data: Extract<AgentStreamEvent, { type: "agent_call" }>["data"]) {
+  function handleAgentCall(
+    data: Extract<AgentStreamEvent, { type: "agent_call" }>["data"],
+  ) {
     const id = data.parent_tool_call_id ?? `${data.agent}-${data.iteration}`;
     upsertActivity({
       id,
@@ -396,64 +382,75 @@ export default function ChatPanel({
       agent: data.agent,
       model: data.model,
       status: "running",
-      summary: `${AGENT_LABELS[data.agent] ?? data.agent} started`,
+      summary: `${data.agent} started`,
       message: `Iteration ${data.iteration}`,
       startedAt: Date.now(),
     });
   }
 
-  function handleAgentResult(data: Extract<AgentStreamEvent, { type: "agent_result" }>["data"]) {
+  function handleAgentResult(
+    data: Extract<AgentStreamEvent, { type: "agent_result" }>["data"],
+  ) {
     const id = `${data.agent}-${data.iteration}`;
     updateLatestAgentMessage((msg) => {
       const activities = msg.activities ?? [];
-      const existing = activities.find((p) => p.id === id || (p.agent === data.agent && p.status === "running"));
+      const existing = activities.find(
+        (p) =>
+          p.id === id || (p.agent === data.agent && p.status === "running"),
+      );
       const resolvedId = existing?.id ?? id;
-      const label = AGENT_LABELS[data.agent] ?? data.agent;
       const patch: Partial<AgentActivityItem> = {
         status: data.success ? "success" : "failed",
-        summary: data.success ? `${label} completed` : `${label} failed`,
+        summary: data.success ? `${data.agent} completed` : `${data.agent} failed`,
         message: `${data.input_tokens.toLocaleString()} in / ${data.output_tokens.toLocaleString()} out`,
         endedAt: Date.now(),
       };
-
       return {
         ...msg,
         activities: existing
-          ? activities.map((p) => p.id === resolvedId ? { ...p, ...patch } : p)
-          : [...activities, {
-              id: resolvedId,
-              kind: "agent",
-              agent: data.agent,
-              status: patch.status ?? "success",
-              summary: patch.summary ?? `${label} completed`,
-              message: patch.message,
-              endedAt: patch.endedAt,
-            }],
+          ? activities.map((p) =>
+              p.id === resolvedId ? { ...p, ...patch } : p,
+            )
+          : [
+              ...activities,
+              {
+                id: resolvedId,
+                kind: "agent",
+                agent: data.agent,
+                status: patch.status ?? "success",
+                summary: patch.summary ?? `${data.agent} completed`,
+                message: patch.message,
+                endedAt: patch.endedAt,
+              },
+            ],
       };
     });
   }
 
-  function finishLatestAgentMessage(content: string, status: AgentActivityItem["status"] = "success") {
+  function finishLatestAgentMessage(
+    content: string,
+    status: AgentActivityItem["status"] = "success",
+  ) {
     updateLatestAgentMessage((msg) => {
-      const activities = msg.activities && msg.activities.length > 0
-        ? msg.activities
-        : [{
-            id: "agent-response",
-            kind: "agent" as const,
-            agent: "infra_agent",
-            model: INFRA_AGENT_MODEL,
-            status,
-            summary: status === "failed" ? "Agent response failed" : "Agent response completed",
-            message: status === "failed" ? content : "Response received",
-            endedAt: Date.now(),
-          }];
-
-      return {
-        ...msg,
-        content,
-        activities,
-        isStreaming: false,
-      };
+      const activities =
+        msg.activities && msg.activities.length > 0
+          ? msg.activities
+          : [
+              {
+                id: "agent-response",
+                kind: "agent" as const,
+                agent: "infra_agent",
+                model: INFRA_AGENT_MODEL,
+                status,
+                summary:
+                  status === "failed"
+                    ? "Agent response failed"
+                    : "Agent response completed",
+                message: status === "failed" ? content : "Response received",
+                endedAt: Date.now(),
+              },
+            ];
+      return { ...msg, content, activities, isStreaming: false };
     });
   }
 
@@ -472,10 +469,24 @@ export default function ChatPanel({
 
   function normalizeQuestionOptions(options: ClarifyingQuestion["options"]) {
     return options.map((option) => {
-      const legacy = option as typeof option & { Label?: string; Value?: string; Description?: string };
+      const legacy = option as typeof option & {
+        Label?: string;
+        Value?: string;
+        Description?: string;
+      };
       return {
-        label: option.label ?? legacy.Label ?? option.value ?? legacy.Value ?? "Option",
-        value: option.value ?? legacy.Value ?? option.label ?? legacy.Label ?? "option",
+        label:
+          option.label ??
+          legacy.Label ??
+          option.value ??
+          legacy.Value ??
+          "Option",
+        value:
+          option.value ??
+          legacy.Value ??
+          option.label ??
+          legacy.Label ??
+          "option",
         description: option.description ?? legacy.Description,
       };
     });
@@ -483,25 +494,36 @@ export default function ChatPanel({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, activeTab]);
 
   useEffect(() => {
     if (syntheticPrompt && !loading) {
       onSyntheticPromptConsumed?.();
       handleSendText(syntheticPrompt);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syntheticPrompt]);
+
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  }, [input]);
 
   async function handleSendText(overrideText: string) {
     const text = overrideText.trim();
     if (!text || loading) return;
 
-    const contextBlock = contextNodes.length > 0
-      ? `[Selected resources for context:\n${contextNodes.map(n =>
-          `- ${n.name} (${n.type}, group: ${n.resourceGroup}, location: ${n.location}, id: ${n.id})`
-        ).join("\n")}]\n\n`
-      : "";
+    const contextBlock =
+      contextNodes.length > 0
+        ? `[Selected resources for context:\n${contextNodes
+            .map(
+              (n) =>
+                `- ${n.name} (${n.type}, group: ${n.resourceGroup}, location: ${n.location}, id: ${n.id})`,
+            )
+            .join("\n")}]\n\n`
+        : "";
     const fullText = contextBlock + text;
 
     setInput("");
@@ -509,10 +531,17 @@ export default function ChatPanel({
     const newMessages: ChatMessage[] = [
       ...collapsePreviousAgentRich(messages),
       { role: "user", content: text },
-      { role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false },
+      {
+        role: "agent",
+        content: "",
+        toolCalls: [],
+        isStreaming: true,
+        richCollapsed: false,
+      },
     ];
     onMessagesChange(newMessages);
     setLoading(true);
+    setActiveTab("chat");
 
     try {
       for await (const evt of streamChat(fullText, subscriptionId, sessionId)) {
@@ -523,11 +552,15 @@ export default function ChatPanel({
             const last = msgs[msgs.length - 1];
             msgs[msgs.length - 1] = {
               ...last,
-              toolCalls: [...(last.toolCalls ?? []), { tool: evt.data.tool, done: false }],
+              toolCalls: [
+                ...(last.toolCalls ?? []),
+                { tool: evt.data.tool, done: false },
+              ],
             };
             return msgs;
           });
         } else if (evt.type === "tool_result") {
+          onDeploymentComplete();
           onMessagesChange((prev: ChatMessage[]) => {
             const msgs = [...prev];
             const last = msgs[msgs.length - 1];
@@ -536,7 +569,7 @@ export default function ChatPanel({
               toolCalls: last.toolCalls?.map((tc) =>
                 tc.tool === evt.data.tool && !tc.done
                   ? { ...tc, done: true, success: evt.data.success }
-                  : tc
+                  : tc,
               ),
             };
             return msgs;
@@ -586,12 +619,19 @@ export default function ChatPanel({
         } else if (evt.type === "agent_result") {
           handleAgentResult(evt.data);
         } else if (evt.type === "usage") {
-          onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
+          onTokenUsage({
+            input: evt.data.input_tokens,
+            output: evt.data.output_tokens,
+          });
         } else if (evt.type === "reply") {
           onSessionIdSet(evt.data.session_id);
           finishLatestAgentMessage(evt.data.content);
           const lower = evt.data.content.toLowerCase();
-          if (lower.includes("succeeded") || lower.includes("deployed") || lower.includes("created")) {
+          if (
+            lower.includes("succeeded") ||
+            lower.includes("deployed") ||
+            lower.includes("created")
+          ) {
             onDeploymentComplete();
           }
         } else if (evt.type === "error") {
@@ -617,7 +657,6 @@ export default function ChatPanel({
   }
 
   function handlePlanApproved() {
-    // After approval, the backend injects an executor-specific resume message.
     setTimeout(() => {
       handleResumeAfterApproval();
     }, 300);
@@ -626,21 +665,23 @@ export default function ChatPanel({
   function handleQuestionAnswered(questionId: string, answer: string) {
     const next = messages.map((msg) => {
       const questions = msg.questions?.map((q) =>
-        q.questionId === questionId ? { ...q, status: "answered" as const, answer } : q
+        q.questionId === questionId
+          ? { ...q, status: "answered" as const, answer }
+          : q,
       );
       return {
         ...msg,
-        question: msg.question?.questionId === questionId
-          ? { ...msg.question, status: "answered" as const, answer }
-          : msg.question,
+        question:
+          msg.question?.questionId === questionId
+            ? { ...msg.question, status: "answered" as const, answer }
+            : msg.question,
         questions,
       };
     });
-
     onMessagesChange(next);
-    const pending = next.flatMap((m) => m.questions ?? (m.question ? [m.question] : []))
+    const pending = next
+      .flatMap((m) => m.questions ?? (m.question ? [m.question] : []))
       .some((q) => q.status !== "answered" && !q.answer);
-
     if (!pending) {
       setTimeout(() => {
         handleResumeAfterQuestion();
@@ -652,20 +693,25 @@ export default function ChatPanel({
     setLoading(true);
     onMessagesChange((prev) => [
       ...collapsePreviousAgentRich(prev),
-      { role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false },
+      {
+        role: "agent",
+        content: "",
+        toolCalls: [],
+        isStreaming: true,
+        richCollapsed: false,
+      },
     ]);
-
     try {
-      for await (const evt of streamChat("continue with clarification answer", subscriptionId, sessionId)) {
-        if (evt.type === "activity_start") {
-          handleActivityStart(evt.data);
-        } else if (evt.type === "activity_end") {
-          handleActivityEnd(evt.data);
-        } else if (evt.type === "agent_call") {
-          handleAgentCall(evt.data);
-        } else if (evt.type === "agent_result") {
-          handleAgentResult(evt.data);
-        } else if (evt.type === "question") {
+      for await (const evt of streamChat(
+        "continue with clarification answer",
+        subscriptionId,
+        sessionId,
+      )) {
+        if (evt.type === "activity_start") handleActivityStart(evt.data);
+        else if (evt.type === "activity_end") handleActivityEnd(evt.data);
+        else if (evt.type === "agent_call") handleAgentCall(evt.data);
+        else if (evt.type === "agent_result") handleAgentResult(evt.data);
+        else if (evt.type === "question") {
           appendQuestion({
             questionId: evt.data.question_id,
             title: evt.data.title,
@@ -699,11 +745,12 @@ export default function ChatPanel({
             };
             return msgs;
           });
-        } else if (evt.type === "reply") {
-          finishLatestAgentMessage(evt.data.content);
-        } else if (evt.type === "usage") {
-          onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
-        }
+        } else if (evt.type === "reply") finishLatestAgentMessage(evt.data.content);
+        else if (evt.type === "usage")
+          onTokenUsage({
+            input: evt.data.input_tokens,
+            output: evt.data.output_tokens,
+          });
       }
     } finally {
       setLoading(false);
@@ -714,22 +761,35 @@ export default function ChatPanel({
     setLoading(true);
     onMessagesChange((prev) => [
       ...collapsePreviousAgentRich(prev),
-      { role: "agent", content: "", toolCalls: [], isStreaming: true, richCollapsed: false },
+      {
+        role: "agent",
+        content: "",
+        toolCalls: [],
+        isStreaming: true,
+        richCollapsed: false,
+      },
     ]);
-
     try {
-      for await (const evt of streamChat("execute approved plan", subscriptionId, sessionId)) {
+      for await (const evt of streamChat(
+        "execute approved plan",
+        subscriptionId,
+        sessionId,
+      )) {
         if (evt.type === "tool_call") {
           onMessagesChange((prev) => {
             const msgs = [...prev];
             const last = msgs[msgs.length - 1];
             msgs[msgs.length - 1] = {
               ...last,
-              toolCalls: [...(last.toolCalls ?? []), { tool: evt.data.tool, done: false }],
+              toolCalls: [
+                ...(last.toolCalls ?? []),
+                { tool: evt.data.tool, done: false },
+              ],
             };
             return msgs;
           });
         } else if (evt.type === "tool_result") {
+          onDeploymentComplete();
           onMessagesChange((prev) => {
             const msgs = [...prev];
             const last = msgs[msgs.length - 1];
@@ -738,7 +798,7 @@ export default function ChatPanel({
               toolCalls: last.toolCalls?.map((tc) =>
                 tc.tool === evt.data.tool && !tc.done
                   ? { ...tc, done: true, success: evt.data.success }
-                  : tc
+                  : tc,
               ),
             };
             return msgs;
@@ -777,100 +837,224 @@ export default function ChatPanel({
             originatingAgent: evt.data.originating_agent ?? undefined,
             status: "pending",
           });
-        } else if (evt.type === "activity_start") {
-          handleActivityStart(evt.data);
-        } else if (evt.type === "activity_end") {
-          handleActivityEnd(evt.data);
-        } else if (evt.type === "agent_call") {
-          handleAgentCall(evt.data);
-        } else if (evt.type === "agent_result") {
-          handleAgentResult(evt.data);
-        } else if (evt.type === "reply") {
+        } else if (evt.type === "activity_start") handleActivityStart(evt.data);
+        else if (evt.type === "activity_end") handleActivityEnd(evt.data);
+        else if (evt.type === "agent_call") handleAgentCall(evt.data);
+        else if (evt.type === "agent_result") handleAgentResult(evt.data);
+        else if (evt.type === "reply") {
           finishLatestAgentMessage(evt.data.content);
           onDeploymentComplete();
-        } else if (evt.type === "usage") {
-          onTokenUsage({ input: evt.data.input_tokens, output: evt.data.output_tokens });
-        }
+        } else if (evt.type === "usage")
+          onTokenUsage({
+            input: evt.data.input_tokens,
+            output: evt.data.output_tokens,
+          });
       }
     } finally {
       setLoading(false);
     }
   }
 
+  const latestPlan = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      const plans = m.plans ?? (m.plan ? [m.plan] : []);
+      if (plans.length > 0) return plans[plans.length - 1];
+    }
+    return null;
+  }, [messages]);
+
+  const allActivities = useMemo(() => {
+    const out: AgentActivityItem[] = [];
+    for (const m of messages) {
+      if (m.activities) out.push(...m.activities);
+    }
+    return out;
+  }, [messages]);
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#161b27]">
-      <div className="flex flex-shrink-0 items-center gap-2 border-b border-slate-700 px-4 py-2">
-        <Bot size={14} className="text-blue-400" />
-        <span className="text-xs font-semibold text-slate-300">InfraMapper Agent</span>
-        <span className="text-[10px] text-slate-500">· {formatModelName(INFRA_AGENT_MODEL)}</span>
-        {(tokenUsage.input > 0) && (
-          <span className="ml-auto text-[10px] text-slate-600 font-mono">
-            {tokenUsage.input.toLocaleString()} / 200k tokens
-          </span>
-        )}
+    <div className="flex h-full min-h-0 flex-col bg-[#0b1018]">
+      <div className="flex flex-shrink-0 items-center justify-between border-b border-slate-800 bg-[#0f1421]">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <div className="flex h-6 w-6 items-center justify-center rounded bg-gradient-to-br from-cyan-400/30 to-cyan-600/30 border border-cyan-500/40">
+            <Bot size={12} className="text-cyan-300" />
+          </div>
+          <span className="text-xs font-semibold text-slate-200">InfraMapper</span>
+          <button className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-300 hover:bg-slate-800">
+            {formatModelName(INFRA_AGENT_MODEL)}
+          </button>
+        </div>
+        <div className="flex items-center gap-3 px-3">
+          {tokenUsage.input > 0 && (
+            <span className="text-[10px] text-slate-600 font-mono">
+              {tokenUsage.input.toLocaleString()} / 200k
+            </span>
+          )}
+          <button
+            onClick={async () => {
+              if (loading) return;
+              if (sessionId) {
+                try {
+                  await resetSession(sessionId);
+                } catch {
+                  /* ignore; clear UI anyway */
+                }
+              }
+              onResetChat?.();
+            }}
+            disabled={loading}
+            title="Restart chat (clears all memory)"
+            className="inline-flex items-center gap-1 rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-400 hover:border-cyan-500/60 hover:text-cyan-300 disabled:opacity-40"
+          >
+            <RotateCcw size={11} />
+            Restart
+          </button>
+        </div>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {messages.map((msg, i) =>
-          msg.role === "user" ? (
-            <div key={i} className="w-full rounded-lg border border-blue-900/70 bg-blue-950/40 px-3 py-2">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-blue-300">You</div>
-              <div className="text-xs text-slate-100 break-words min-w-0 overflow-hidden">
-                {msg.content}
-              </div>
-            </div>
-          ) : (
-            <AgentMessage
-              key={i}
-              msg={msg}
-              sessionId={sessionId}
-              onApproved={handlePlanApproved}
-              onQuestionAnswered={handleQuestionAnswered}
-              onRejected={() => {}}
-            />
-          )
-        )}
-        <div ref={bottomRef} />
+      <div className="flex-shrink-0 border-b border-slate-800">
+        <TabBar active={activeTab} onChange={setActiveTab} />
       </div>
 
-      <div className="flex-shrink-0 border-t border-slate-700 px-3 py-3">
-        {contextNodes.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {contextNodes.map((n) => (
-              <div
-                key={n.id}
-                className="flex items-center gap-1 bg-blue-900/50 border border-blue-700/60 rounded px-1.5 py-0.5 text-[10px] text-blue-300 max-w-full"
-              >
-                <span className="truncate max-w-[140px]" title={n.name}>{n.name}</span>
-                <span className="text-blue-600 truncate max-w-[80px]">{n.type.split("/").pop()}</span>
-                <button
-                  onClick={() => onRemoveContext?.(n.id)}
-                  className="text-blue-500 hover:text-blue-200 flex-shrink-0 ml-0.5"
-                >
-                  <X size={9} />
-                </button>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {activeTab === "chat" && (
+          <div className="space-y-5 px-4 py-4">
+            {messages.length === 0 && (
+              <div className="text-center text-[11px] text-slate-600 py-12">
+                <Sparkles size={16} className="mx-auto mb-2 text-cyan-500/60" />
+                Describe infrastructure or ask a question. Agent will inspect,
+                trace, group, then plan.
               </div>
-            ))}
+            )}
+            {messages.map((msg, i) =>
+              msg.role === "user" ? (
+                <UserBubble key={i} content={msg.content} />
+              ) : (
+                <AgentMessage
+                  key={i}
+                  msg={msg}
+                  sessionId={sessionId}
+                  onApproved={handlePlanApproved}
+                  onQuestionAnswered={handleQuestionAnswered}
+                  onRejected={() => {}}
+                />
+              ),
+            )}
+            <div ref={bottomRef} />
           </div>
         )}
-        <div className="flex gap-2 items-end bg-[#1e293b] rounded-lg px-3 py-2">
+
+        {activeTab === "plan" && (
+          <div className="px-4 py-4">
+            {latestPlan ? (
+              <PlanCard
+                plan={latestPlan}
+                sessionId={sessionId}
+                onApproved={handlePlanApproved}
+                onRejected={() => {}}
+              />
+            ) : (
+              <div className="text-center text-[11px] text-slate-600 py-12">
+                <ListChecks size={16} className="mx-auto mb-2 text-slate-700" />
+                No plan yet. Ask the agent to create infrastructure.
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "logs" && (
+          <div className="px-4 py-4">
+            <div className="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500">
+              <Terminal size={11} />
+              Agent log · session {sessionId ? sessionId.slice(0, 8) : "new"}
+            </div>
+            {deriveLines(allActivities).length > 0 ? (
+              <TerminalStream activities={allActivities} />
+            ) : (
+              <div className="text-[11px] text-slate-600 italic">
+                No events yet.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex-shrink-0 border-t border-slate-800 px-3 py-3">
+        <div className="mb-1.5 flex items-center gap-2 text-[10px] text-slate-500">
+          <span>Context:</span>
+          {contextNodes.length === 0 ? (
+            <span className="rounded border border-slate-800 px-1.5 py-0.5 text-slate-600">
+              none selected
+            </span>
+          ) : (
+            <div className="flex flex-wrap gap-1">
+              {contextNodes.map((n) => (
+                <div
+                  key={n.id}
+                  className="inline-flex items-center gap-1 rounded border border-cyan-700/50 bg-cyan-950/40 px-1.5 py-0.5 text-[10px] text-cyan-300"
+                >
+                  <span className="truncate max-w-[140px]" title={n.name}>
+                    {n.name}
+                  </span>
+                  <span className="text-cyan-700">
+                    {n.type.split("/").pop()}
+                  </span>
+                  <button
+                    onClick={() => onRemoveContext?.(n.id)}
+                    className="text-cyan-600 hover:text-cyan-200"
+                  >
+                    <X size={9} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-slate-700 bg-[#0f172a] px-3 py-2 focus-within:border-cyan-500/60 focus-within:ring-1 focus-within:ring-cyan-500/40 transition-colors">
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Describe infrastructure or ask a question..."
-            rows={1}
-            className="flex-1 bg-transparent text-xs text-slate-200 placeholder-slate-500 resize-none outline-none max-h-28"
+            rows={2}
+            className="block w-full resize-none bg-transparent text-xs text-slate-200 placeholder-slate-600 outline-none"
           />
-          <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="text-blue-400 hover:text-blue-300 disabled:text-slate-600 flex-shrink-0 pb-0.5"
-          >
-            <Send size={14} />
-          </button>
+          <div className="mt-2 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-slate-500">
+              <button
+                title="Attach"
+                className="rounded p-1 hover:bg-slate-800 hover:text-slate-300"
+              >
+                <Paperclip size={12} />
+              </button>
+              <button
+                title="Mention resource"
+                className="rounded p-1 hover:bg-slate-800 hover:text-slate-300"
+              >
+                <AtSign size={12} />
+              </button>
+              <button
+                title="Activity"
+                className="rounded p-1 hover:bg-slate-800 hover:text-slate-300"
+              >
+                <Activity size={12} />
+              </button>
+            </div>
+            <button
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className="inline-flex items-center gap-1.5 rounded bg-cyan-500 px-3 py-1.5 text-[11px] font-semibold text-slate-900 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500"
+            >
+              <Send size={11} />
+              Send
+            </button>
+          </div>
         </div>
-        <p className="text-[10px] text-slate-600 mt-1.5 text-center">Enter to send · Shift+Enter for newline · Click graph nodes to add context</p>
+        <p className="mt-1.5 text-center text-[10px] text-slate-600">
+          Enter to send · Shift+Enter for newline · Click graph nodes to add context
+        </p>
       </div>
     </div>
   );
