@@ -17,7 +17,7 @@ from semantic_kernel import Kernel
 from semantic_kernel.agents import AzureAIAgent
 from semantic_kernel.exceptions.agent_exceptions import AgentInvokeException
 
-from app.constants import INFRA_ANALYZER_AGENT, INFRA_ANALYZER_PLUGIN_NAME
+from app.constants import Constants
 from app.plugins.infra_analyzer_plugin import (
     InfraAnalyzerPlugin,
     reset_tool_event_handler,
@@ -28,12 +28,7 @@ from app.plugins.infra_analyzer_plugin import (
 load_dotenv(BACKEND_ROOT / ".env")
 
 ToolEventHandler = Callable[[str, str, str, bool | None], Awaitable[None]]
-INFRA_ANALYZER_INSTRUCTIONS = (
-    "You are infra-analyzer, a read-only Azure infrastructure analysis agent. "
-    "Use the provided tools to inspect Azure resource groups, resources, and resource properties. "
-    "Never create, update, delete, deploy, or modify Azure resources. "
-    "When you use a tool, summarize the result clearly and include important resource names and types."
-)
+INFRA_ANALYZER_INSTRUCTIONS = Constants.INFRA_ANALYZER_INSTRUCTIONS
 
 
 def normalize_project_endpoint(value: str) -> str:
@@ -67,7 +62,10 @@ def default_subscription_id() -> str:
 
 def _kernel_with_agent_tools() -> Kernel:
     kernel = Kernel()
-    kernel.add_plugin(InfraAnalyzerPlugin(), plugin_name=INFRA_ANALYZER_PLUGIN_NAME)
+    kernel.add_plugin(
+        InfraAnalyzerPlugin(),
+        plugin_name=Constants.INFRA_ANALYZER_PLUGIN_NAME,
+    )
     return kernel
 
 
@@ -97,7 +95,7 @@ async def ask_infra_analyzer(
     ):
         agent_definition = await client.agents.create_agent(
             model=model_name,
-            name=INFRA_ANALYZER_AGENT,
+            name=Constants.INFRA_ANALYZER_AGENT,
             instructions=INFRA_ANALYZER_INSTRUCTIONS,
         )
         print(f"Created agent, agent ID: {agent_definition.id}")

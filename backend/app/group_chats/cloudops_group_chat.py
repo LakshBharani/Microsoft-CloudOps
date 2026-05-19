@@ -26,11 +26,7 @@ from app.agents.infra_analyzer_agent import (
     configure_semantic_kernel_env,
     default_subscription_id,
 )
-from app.constants import (
-    DEPENDENCY_ANALYSIS_COMPLETE,
-    DEPENDENCY_ANALYZER_AGENT,
-    INFRA_ANALYZER_AGENT,
-)
+from app.constants import Constants
 from app.plugins.dependency_analyzer_plugin import (
     reset_dependency_tool_event_handler,
     set_dependency_tool_event_handler,
@@ -83,16 +79,16 @@ class CloudOpsSelectionStrategy(SelectionStrategy):
         history: list[ChatMessageContent],
     ) -> Agent:
         if not _needs_dependency_analysis(history):
-            return _agent_by_name(agents, INFRA_ANALYZER_AGENT)
+            return _agent_by_name(agents, Constants.INFRA_ANALYZER_AGENT)
 
         if not self.has_selected:
-            return _agent_by_name(agents, INFRA_ANALYZER_AGENT)
+            return _agent_by_name(agents, Constants.INFRA_ANALYZER_AGENT)
 
         last_agent_name = history[-1].name if history else ""
-        if last_agent_name == INFRA_ANALYZER_AGENT:
-            return _agent_by_name(agents, DEPENDENCY_ANALYZER_AGENT)
+        if last_agent_name == Constants.INFRA_ANALYZER_AGENT:
+            return _agent_by_name(agents, Constants.DEPENDENCY_ANALYZER_AGENT)
 
-        return _agent_by_name(agents, INFRA_ANALYZER_AGENT)
+        return _agent_by_name(agents, Constants.INFRA_ANALYZER_AGENT)
 
 
 class CloudOpsTerminationStrategy(TerminationStrategy):
@@ -107,12 +103,12 @@ class CloudOpsTerminationStrategy(TerminationStrategy):
             return False
 
         if not _needs_dependency_analysis(history):
-            return agent.name == INFRA_ANALYZER_AGENT
+            return agent.name == Constants.INFRA_ANALYZER_AGENT
 
         latest = str(history[-1].content or "").lower()
         return (
-            agent.name == DEPENDENCY_ANALYZER_AGENT
-            or DEPENDENCY_ANALYSIS_COMPLETE.lower() in latest
+            agent.name == Constants.DEPENDENCY_ANALYZER_AGENT
+            or Constants.DEPENDENCY_ANALYSIS_COMPLETE.lower() in latest
             or "need more information" in latest
             or "no matching resource" in latest
         )
@@ -134,7 +130,7 @@ async def ask_cloudops_group_chat(
     ):
         infra_analyzer_agent_definition = await client.agents.create_agent(
             model=model_name,
-            name=INFRA_ANALYZER_AGENT,
+            name=Constants.INFRA_ANALYZER_AGENT,
             instructions=INFRA_ANALYZER_INSTRUCTIONS,
         )
         dependency_analyzer_agent_definition = await create_dependency_analyzer_definition(
@@ -142,11 +138,11 @@ async def ask_cloudops_group_chat(
             model_name,
         )
         print(
-            f"Created agent [{INFRA_ANALYZER_AGENT}], agent ID: "
+            f"Created agent [{Constants.INFRA_ANALYZER_AGENT}], agent ID: "
             f"{infra_analyzer_agent_definition.id}"
         )
         print(
-            f"Created agent [{DEPENDENCY_ANALYZER_AGENT}], agent ID: "
+            f"Created agent [{Constants.DEPENDENCY_ANALYZER_AGENT}], agent ID: "
             f"{dependency_analyzer_agent_definition.id}"
         )
 
@@ -189,11 +185,11 @@ async def ask_cloudops_group_chat(
             await client.agents.delete_agent(infra_analyzer_agent_definition.id)
             await client.agents.delete_agent(dependency_analyzer_agent_definition.id)
             print(
-                f"Deleted agent [{INFRA_ANALYZER_AGENT}], agent ID: "
+                f"Deleted agent [{Constants.INFRA_ANALYZER_AGENT}], agent ID: "
                 f"{infra_analyzer_agent_definition.id}"
             )
             print(
-                f"Deleted agent [{DEPENDENCY_ANALYZER_AGENT}], agent ID: "
+                f"Deleted agent [{Constants.DEPENDENCY_ANALYZER_AGENT}], agent ID: "
                 f"{dependency_analyzer_agent_definition.id}"
             )
 
