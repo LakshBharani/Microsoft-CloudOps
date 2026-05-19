@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
-from app.agent import ask_infra_analyzer
+from app.group_chats.cloudops_group_chat import ask_cloudops_group_chat
 from app.config import get_settings
 from app.azure_resources import get_infrastructure_nodes
 from app.devops import AzureDevOpsConfig, get_desired_state, push_desired_state
@@ -88,6 +88,11 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
 
         async def on_tool_event(tool: str, invocation_id: str, phase: str, success: bool | None) -> None:
             activity_id = f"tool-{invocation_id}"
+            tool_agent = (
+                "dependency-analyzer"
+                if tool.startswith("analyze_")
+                else "infra-analyzer"
+            )
             if phase == "start":
                 await queue.put({"type": "tool_call", "data": {"tool": tool, "session_id": session_id}})
                 await queue.put(
@@ -97,7 +102,7 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                             "id": activity_id,
                             "kind": "tool",
                             "tool": tool,
-                            "agent": "infra-analyzer",
+                            "agent": tool_agent,
                             "status": "running",
                             "summary": f"{tool} invoked",
                             "session_id": session_id,
@@ -119,7 +124,7 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         "id": activity_id,
                         "kind": "tool",
                         "tool": tool,
-                        "agent": "infra-analyzer",
+                        "agent": tool_agent,
                         "status": "success" if success else "failed",
                         "summary": f"{tool} done" if success else f"{tool} failed",
                         "session_id": session_id,
@@ -134,15 +139,15 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         "type": "activity_start",
                         "data": {
                             "id": f"agent-{session_id}",
-                            "kind": "agent",
-                            "agent": "infra-analyzer",
+                            "kind": "group_chat",
+                            "agent": None,
                             "status": "running",
-                            "summary": "Invoking infra-analyzer",
+                            "summary": "Invoking cloudops group chat",
                             "session_id": session_id,
                         },
                     }
                 )
-                reply = await ask_infra_analyzer(
+                reply = await ask_cloudops_group_chat(
                     request.message,
                     subscription_id=subscription_id,
                     on_tool_event=on_tool_event,
@@ -152,10 +157,10 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         "type": "activity_end",
                         "data": {
                             "id": f"agent-{session_id}",
-                            "kind": "agent",
-                            "agent": "infra-analyzer",
+                            "kind": "group_chat",
+                            "agent": None,
                             "status": "success",
-                            "summary": "Invoking infra-analyzer done",
+                            "summary": "Invoking cloudops group chat done",
                             "session_id": session_id,
                         },
                     }
@@ -167,8 +172,8 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         "type": "activity_end",
                         "data": {
                             "id": f"agent-{session_id}",
-                            "kind": "agent",
-                            "agent": "infra-analyzer",
+                            "kind": "group_chat",
+                            "agent": None,
                             "status": "failed",
                             "summary": "Analysis failed",
                             "message": str(exc),

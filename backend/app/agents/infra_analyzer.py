@@ -1,20 +1,23 @@
+
+from __future__ import annotations
+
 import asyncio
 import os
 import sys
 from pathlib import Path
 from typing import Awaitable, Callable
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential  
 from dotenv import load_dotenv
 from semantic_kernel import Kernel
 from semantic_kernel.agents import AzureAIAgent
 from semantic_kernel.exceptions.agent_exceptions import AgentInvokeException
 
-from app.agent_functions import (
+from app.plugins.azure_read_plugin import (
     AzureReadPlugin,
     reset_tool_event_handler,
     set_tool_event_handler,
@@ -24,6 +27,7 @@ from app.agent_functions import (
 load_dotenv(BACKEND_ROOT / ".env")
 
 ToolEventHandler = Callable[[str, str, str, bool | None], Awaitable[None]]
+INFRA_ANALYZER = "infra-analyzer"
 INFRA_ANALYZER_INSTRUCTIONS = (
     "You are infra-analyzer, a read-only Azure infrastructure analysis agent. "
     "Use the provided tools to inspect Azure resource groups, resources, and resource properties. "
@@ -93,7 +97,7 @@ async def ask_infra_analyzer(
     ):
         agent_definition = await client.agents.create_agent(
             model=model_name,
-            name="infra-analyzer",
+            name=INFRA_ANALYZER,
             instructions=INFRA_ANALYZER_INSTRUCTIONS,
         )
         print(f"Created agent, agent ID: {agent_definition.id}")

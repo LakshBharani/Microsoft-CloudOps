@@ -31,7 +31,7 @@ export interface ToolCall {
 export interface AgentActivityItem {
   id: string;
   parentId?: string;
-  kind: "agent" | "tool" | "plan" | "question" | "error";
+  kind: "group_chat" | "agent" | "tool" | "plan" | "question" | "error";
   agent?: string;
   tool?: string;
   model?: string;

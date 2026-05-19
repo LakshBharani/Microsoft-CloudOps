@@ -9,6 +9,8 @@ const TOOL_PHRASES: Record<string, { running: string; done: string }> = {
   find_resource:            { running: "finding resource...",                    done: "finding resource done" },
   get_resource_properties:  { running: "reading resource properties...",         done: "reading resource properties done" },
   get_resource_group_properties: { running: "reading resource group properties...", done: "reading resource group properties done" },
+  analyze_resource_dependencies: { running: "analyzing resource dependencies...", done: "analyzing resource dependencies done" },
+  analyze_resource_group_dependencies: { running: "analyzing resource group dependencies...", done: "analyzing resource group dependencies done" },
   trace_dependencies:       { running: "establishing dependency edges...",       done: "dependency graph built" },
   whatif_arm_template:      { running: "simulating deployment impact...",        done: "what-if analysis complete" },
   create_plan:              { running: "cooking up a plan...",                   done: "plan drafted" },
@@ -24,7 +26,10 @@ const AGENT_PHRASES: Record<string, string> = {
   PlanAgent:    "drafting operations plan",
   ExecuteAgent: "executing approved changes",
   "infra-analyzer": "invoking infra-analyzer",
+  "dependency-analyzer": "invoking dependency-analyzer",
 };
+
+const GROUP_CHAT_PHRASE = "invoking cloudops group chat";
 
 const COMMIT_TOOLS = new Set([
   "create_or_update_resource",
@@ -62,6 +67,17 @@ export function deriveLines(activities: AgentActivityItem[] | undefined): Termin
         : item.status === "failed"
           ? "failed"
           : "done";
+
+    if (item.kind === "group_chat") {
+      if (item.status === "running") {
+        lines.push({ id: item.id, text: `${GROUP_CHAT_PHRASE}...`, state: "running" });
+      } else if (item.status === "failed") {
+        lines.push({ id: item.id, text: `${GROUP_CHAT_PHRASE} failed: ${item.message ?? item.summary}`, state: "failed" });
+      } else {
+        lines.push({ id: item.id, text: `${GROUP_CHAT_PHRASE} done`, state: "done" });
+      }
+      continue;
+    }
 
     if (item.kind === "agent") {
       const agentPhrase = item.agent ? (AGENT_PHRASES[item.agent] ?? item.agent) : "Agent working";
