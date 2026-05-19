@@ -8,6 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
+from app.constants import (
+    DEPENDENCY_ANALYZER_AGENT,
+    INFRA_ANALYZER_AGENT,
+)
 from app.group_chats.cloudops_group_chat import ask_cloudops_group_chat
 from app.config import get_settings
 from app.azure_resources import get_infrastructure_nodes
@@ -89,9 +93,9 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
         async def on_tool_event(tool: str, invocation_id: str, phase: str, success: bool | None) -> None:
             activity_id = f"tool-{invocation_id}"
             tool_agent = (
-                "dependency-analyzer"
+                DEPENDENCY_ANALYZER_AGENT
                 if tool.startswith("analyze_")
-                else "infra-analyzer"
+                else INFRA_ANALYZER_AGENT
             )
             if phase == "start":
                 await queue.put({"type": "tool_call", "data": {"tool": tool, "session_id": session_id}})
@@ -214,7 +218,8 @@ async def diff(payload: dict[str, Any], subscriptionId: str = Query(default=""))
     try:
         desired = DesiredStateSpec.model_validate(payload)
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=f"Could not parse infrastructure JSON: {exc}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"Could not parse infrastructure JSON: {exc}") from exc
 
     live_nodes = await get_infrastructure_nodes(subscription_id)
     return compute_diff(live_nodes, desired)
@@ -239,7 +244,8 @@ async def desired_state_get(
     )
     content = await get_desired_state(cfg)
     if content is None:
-        raise HTTPException(status_code=404, detail="File not found in repository.")
+        raise HTTPException(
+            status_code=404, detail="File not found in repository.")
 
     return Response(content=content, media_type="application/json")
 

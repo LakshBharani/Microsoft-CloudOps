@@ -1,30 +1,4 @@
 from __future__ import annotations
-from app.plugins.azure_read_plugin import (
-    AzureReadPlugin,
-    reset_tool_event_handler,
-    set_tool_event_handler,
-)
-from app.plugins.azure_dependency_plugin import (
-    reset_dependency_tool_event_handler,
-    set_dependency_tool_event_handler,
-)
-from app.agents.infra_analyzer import (
-    INFRA_ANALYZER,
-    INFRA_ANALYZER_INSTRUCTIONS,
-    _message_with_subscription,
-    configure_semantic_kernel_env,
-    default_subscription_id,
-)
-from app.agents.dependency_analyzer import (
-    DEPENDENCY_ANALYZER,
-    create_dependency_analyzer_agent,
-    create_dependency_analyzer_definition,
-)
-from semantic_kernel.contents import ChatMessageContent
-from semantic_kernel.agents.strategies import SelectionStrategy, TerminationStrategy
-from semantic_kernel.agents import Agent, AgentGroupChat, AzureAIAgent
-from dotenv import load_dotenv
-from azure.identity.aio import DefaultAzureCredential
 
 import asyncio
 import os
@@ -35,6 +9,37 @@ from typing import Awaitable, Callable
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+from azure.identity.aio import DefaultAzureCredential
+from dotenv import load_dotenv
+from semantic_kernel.agents import Agent, AgentGroupChat, AzureAIAgent
+from semantic_kernel.agents.strategies import SelectionStrategy, TerminationStrategy
+from semantic_kernel.contents import ChatMessageContent
+
+from app.agents.dependency_analyzer_agent import (
+    create_dependency_analyzer_agent,
+    create_dependency_analyzer_definition,
+)
+from app.agents.infra_analyzer_agent import (
+    INFRA_ANALYZER_INSTRUCTIONS,
+    _message_with_subscription,
+    configure_semantic_kernel_env,
+    default_subscription_id,
+)
+from app.constants import (
+    DEPENDENCY_ANALYSIS_COMPLETE,
+    DEPENDENCY_ANALYZER_AGENT,
+    INFRA_ANALYZER_AGENT,
+)
+from app.plugins.dependency_analyzer_plugin import (
+    reset_dependency_tool_event_handler,
+    set_dependency_tool_event_handler,
+)
+from app.plugins.infra_analyzer_plugin import (
+    InfraAnalyzerPlugin,
+    reset_tool_event_handler,
+    set_tool_event_handler,
+)
 
 
 load_dotenv(BACKEND_ROOT / ".env")
@@ -78,16 +83,16 @@ class CloudOpsSelectionStrategy(SelectionStrategy):
         history: list[ChatMessageContent],
     ) -> Agent:
         if not _needs_dependency_analysis(history):
-            return _agent_by_name(agents, INFRA_ANALYZER)
+            return _agent_by_name(agents, INFRA_ANALYZER_AGENT)
 
         if not self.has_selected:
-            return _agent_by_name(agents, INFRA_ANALYZER)
+            return _agent_by_name(agents, INFRA_ANALYZER_AGENT)
 
         last_agent_name = history[-1].name if history else ""
-        if last_agent_name == INFRA_ANALYZER:
-            return _agent_by_name(agents, DEPENDENCY_ANALYZER)
+        if last_agent_name == INFRA_ANALYZER_AGENT:
+            return _agent_by_name(agents, DEPENDENCY_ANALYZER_AGENT)
 
-        return _agent_by_name(agents, INFRA_ANALYZER)
+        return _agent_by_name(agents, INFRA_ANALYZER_AGENT)
 
 
 class CloudOpsTerminationStrategy(TerminationStrategy):
@@ -102,12 +107,12 @@ class CloudOpsTerminationStrategy(TerminationStrategy):
             return False
 
         if not _needs_dependency_analysis(history):
-            return agent.name == INFRA_ANALYZER
+            return agent.name == INFRA_ANALYZER_AGENT
 
         latest = str(history[-1].content or "").lower()
         return (
-            agent.name == DEPENDENCY_ANALYZER
-            or "dependency_analysis_complete" in latest
+            agent.name == DEPENDENCY_ANALYZER_AGENT
+            or DEPENDENCY_ANALYSIS_COMPLETE.lower() in latest
             or "need more information" in latest
             or "no matching resource" in latest
         )
@@ -119,8 +124,7 @@ async def ask_cloudops_group_chat(
     on_tool_event: ToolEventHandler | None = None,
 ) -> str:
     configure_semantic_kernel_env()
-    model_name = os.environ["AZURE_AI_AGENT_MODEL_DEPLOYMENT_NAME"].strip().strip(
-        '"')
+    model_name = os.environ["AZURE_AI_AGENT_MODEL_DEPLOYMENT_NAME"].strip().strip('"')
     resolved_subscription_id = subscription_id.strip() or default_subscription_id()
     user_query = _message_with_subscription(message, resolved_subscription_id)
 
@@ -130,21 +134,26 @@ async def ask_cloudops_group_chat(
     ):
         infra_analyzer_agent_definition = await client.agents.create_agent(
             model=model_name,
-            name=INFRA_ANALYZER,
+            name=INFRA_ANALYZER_AGENT,
             instructions=INFRA_ANALYZER_INSTRUCTIONS,
         )
         dependency_analyzer_agent_definition = await create_dependency_analyzer_definition(
             client,
             model_name,
         )
-        print(f"Created agent, agent ID: {infra_analyzer_agent_definition.id}")
         print(
-            f"Created agent, agent ID: {dependency_analyzer_agent_definition.id}")
+            f"Created agent [{INFRA_ANALYZER_AGENT}], agent ID: "
+            f"{infra_analyzer_agent_definition.id}"
+        )
+        print(
+            f"Created agent [{DEPENDENCY_ANALYZER_AGENT}], agent ID: "
+            f"{dependency_analyzer_agent_definition.id}"
+        )
 
         agent_infra_analyzer = AzureAIAgent(
             client=client,
             definition=infra_analyzer_agent_definition,
-            plugins=[AzureReadPlugin()],
+            plugins=[InfraAnalyzerPlugin()],
         )
         agent_dependency_analyzer = create_dependency_analyzer_agent(
             client,
@@ -165,8 +174,7 @@ async def ask_cloudops_group_chat(
         await chat.add_chat_message(user_query)
 
         read_handler_token = set_tool_event_handler(on_tool_event)
-        dependency_handler_token = set_dependency_tool_event_handler(
-            on_tool_event)
+        dependency_handler_token = set_dependency_tool_event_handler(on_tool_event)
         try:
             responses: list[str] = []
             async for response in chat.invoke():
@@ -181,9 +189,13 @@ async def ask_cloudops_group_chat(
             await client.agents.delete_agent(infra_analyzer_agent_definition.id)
             await client.agents.delete_agent(dependency_analyzer_agent_definition.id)
             print(
-                f"Deleted agent, agent ID: {infra_analyzer_agent_definition.id}")
+                f"Deleted agent [{INFRA_ANALYZER_AGENT}], agent ID: "
+                f"{infra_analyzer_agent_definition.id}"
+            )
             print(
-                f"Deleted agent, agent ID: {dependency_analyzer_agent_definition.id}")
+                f"Deleted agent [{DEPENDENCY_ANALYZER_AGENT}], agent ID: "
+                f"{dependency_analyzer_agent_definition.id}"
+            )
 
 
 async def main() -> None:

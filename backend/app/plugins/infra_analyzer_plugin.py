@@ -86,7 +86,7 @@ async def _emit_tool_event(tool: str, invocation_id: str, phase: str, success: b
         await handler(tool, invocation_id, phase, success)
 
 
-class AzureReadPlugin:
+class InfraAnalyzerPlugin:
     """Read-only Azure infrastructure tools for infra-analyzer."""
 
     @kernel_function(name="list_resource_groups", description="List Azure resource groups in a subscription. Read-only.")

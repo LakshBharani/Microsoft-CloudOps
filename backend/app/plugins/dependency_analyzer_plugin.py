@@ -10,7 +10,7 @@ from semantic_kernel.functions import kernel_function
 
 from app.azure_resources import get_infrastructure_nodes
 from app.models import ResourceNode
-from app.plugins.azure_read_plugin import _resolve_subscription_id
+from app.plugins.infra_analyzer_plugin import _resolve_subscription_id
 
 ToolEventHandler = Callable[[str, str, str, bool | None], Awaitable[None]]
 _tool_event_handler: ContextVar[ToolEventHandler | None] = ContextVar(
@@ -227,7 +227,7 @@ def _resolve_dependency_edges(nodes: list[ResourceNode]) -> list[dict[str, Any]]
     return list(unique_edges.values())
 
 
-class AzureDependencyPlugin:
+class DependencyAnalyzerPlugin:
     """Read-only dependency analysis tools for dependency-analyzer."""
 
     @kernel_function(name="analyze_resource_dependencies", description="Analyze dependency edges for one Azure resource by full ARM resource id. Read-only.")
