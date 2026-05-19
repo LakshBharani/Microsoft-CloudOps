@@ -164,9 +164,8 @@ export default function DiffPanel({
     if (!validateEditorJson()) return;
 
     const prompt = [
-      "Apply the following infrastructure intent using CloudOpsMCP.",
-      "Use create_plan first, then deploy_arm_template, then verify with read tools.",
-      "Create or update resources requested by the JSON. Do not delete extra resources unless the JSON explicitly asks for deletion.",
+      "Apply the following infrastructure intent JSON. Treat the JSON as source of truth.",
+      "The goal is to come up with successfully deploy the infrastructure as described in the JSON. and reverify the deployment by reading the resources and their properties.",
       "",
       "Infrastructure JSON:",
       "```json",

@@ -13,7 +13,7 @@ from app.models import ResourceNode
 
 ToolEventHandler = Callable[[str, str, str, bool | None], Awaitable[None]]
 _tool_event_handler: ContextVar[ToolEventHandler | None] = ContextVar(
-    "tool_event_handler", default=None)
+    "infra-reader_tool_event_handler", default=None)
 
 
 def _json(data: Any) -> str:
@@ -72,11 +72,11 @@ def _find_resource_by_id(nodes: list[ResourceNode], resource_id: str) -> Resourc
     return next((node for node in nodes if _normalize(node.id) == normalized_id), None)
 
 
-def set_tool_event_handler(handler: ToolEventHandler | None) -> object:
+def set_infra_reader_tool_event_handler(handler: ToolEventHandler | None) -> object:
     return _tool_event_handler.set(handler)
 
 
-def reset_tool_event_handler(token: object) -> None:
+def reset_infra_reader_tool_event_handler(token: object) -> None:
     _tool_event_handler.reset(token)
 
 
@@ -86,8 +86,8 @@ async def _emit_tool_event(tool: str, invocation_id: str, phase: str, success: b
         await handler(tool, invocation_id, phase, success)
 
 
-class InfraAnalyzerPlugin:
-    """Read-only Azure infrastructure tools for infra-analyzer."""
+class InfraReaderPlugin:
+    """Read-only Azure infrastructure tools for infra-reader-agent."""
 
     @kernel_function(name="list_resource_groups", description="List Azure resource groups in a subscription. Read-only.")
     async def list_resource_groups(

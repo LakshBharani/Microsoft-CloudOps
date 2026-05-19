@@ -10,11 +10,11 @@ from semantic_kernel.functions import kernel_function
 
 from app.azure_resources import get_infrastructure_nodes
 from app.models import ResourceNode
-from app.plugins.infra_analyzer_plugin import _resolve_subscription_id
+from app.plugins.infra_reader_plugin import _resolve_subscription_id
 
 ToolEventHandler = Callable[[str, str, str, bool | None], Awaitable[None]]
 _tool_event_handler: ContextVar[ToolEventHandler | None] = ContextVar(
-    "dependency_tool_event_handler", default=None)
+    "infra_crawler_tool_event_handler", default=None)
 
 STRONG_DEPENDENCY_TYPES = {
     "microsoft.web/sites->microsoft.web/serverfarms": "hosting",
@@ -35,11 +35,11 @@ DEFAULT_RISK_WEIGHT = 0.5
 RESOURCE_ID_PATTERN = re.compile(r'/subscriptions/[^"\s]+', re.IGNORECASE)
 
 
-def set_dependency_tool_event_handler(handler: ToolEventHandler | None) -> object:
+def set_infra_crawler_tool_event_handler(handler: ToolEventHandler | None) -> object:
     return _tool_event_handler.set(handler)
 
 
-def reset_dependency_tool_event_handler(token: object) -> None:
+def reset_infra_crawler_tool_event_handler(token: object) -> None:
     _tool_event_handler.reset(token)
 
 
@@ -227,8 +227,8 @@ def _resolve_dependency_edges(nodes: list[ResourceNode]) -> list[dict[str, Any]]
     return list(unique_edges.values())
 
 
-class DependencyAnalyzerPlugin:
-    """Read-only dependency analysis tools for dependency-analyzer."""
+class InfraCrawlerPlugin:
+    """Read-only dependency analysis tools for infra-crawler-agent."""
 
     @kernel_function(name="analyze_resource_dependencies", description="Analyze dependency edges for one Azure resource by full ARM resource id. Read-only.")
     async def analyze_resource_dependencies(

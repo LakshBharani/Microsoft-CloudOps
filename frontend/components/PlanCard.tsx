@@ -9,7 +9,7 @@ const OP_BADGE: Record<string, string> = {
   Create: "+ ADD",
   Update: "~ UPDATE",
   Delete: "- DELETE",
-  Deploy: "» DEPLOY",
+  Deploy: "> DEPLOY",
 };
 
 function badge(action: string) {
@@ -63,7 +63,7 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
     }
   }
 
-  const running = status === "approving" || status === "approved";
+  const busy = status === "approving" || status === "rejecting";
 
   return (
     <div className="mt-2 overflow-hidden rounded-lg border border-slate-700/80 bg-[#0f172a] text-xs">
@@ -103,7 +103,7 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
               <span className="flex-shrink-0 font-mono text-[10px] font-semibold text-slate-500 w-[70px]">
                 {label}
               </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300">
+              <span className="min-w-0 flex-1 font-mono text-[11px] leading-relaxed text-slate-300">
                 {describeOp(op)}
               </span>
             </div>
@@ -132,30 +132,30 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
             <CheckCircle2 size={12} /> Plan completed
           </div>
         ) : status === "approved" ? (
-          <div className="flex items-center gap-1.5 text-cyan-400 text-[11px]">
-            <Loader2 size={11} className="animate-spin" /> Plan running
+          <div className="flex items-center gap-1.5 text-green-400 text-[11px]">
+            <CheckCircle2 size={12} /> Approved
           </div>
         ) : (
           <>
             <button
               onClick={handleReject}
-              disabled={running || status === "rejecting"}
+              disabled={busy}
               className="rounded px-3 py-1.5 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-slate-800 disabled:opacity-40"
             >
               {status === "rejecting" ? "Dismissing..." : "Dismiss"}
             </button>
             <button
               onClick={handleApprove}
-              disabled={running || status === "rejecting" || opCount === 0}
+              disabled={busy || opCount === 0}
               className="inline-flex items-center gap-1.5 rounded bg-cyan-500 px-3 py-1.5 text-[11px] font-semibold text-slate-900 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-400"
             >
               {status === "approving" ? (
                 <>
-                  <Loader2 size={11} className="animate-spin" /> Starting...
+                  <Loader2 size={11} className="animate-spin" /> Approving...
                 </>
               ) : (
                 <>
-                  <CheckCircle2 size={11} /> Run plan
+                  <CheckCircle2 size={11} /> Approve
                 </>
               )}
             </button>

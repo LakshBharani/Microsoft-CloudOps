@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useLayoutEffect } from "react";
 import {
   Send,
   Bot,
@@ -17,7 +17,6 @@ import {
 import { streamChat, resetSession } from "@/lib/api";
 import type {
   ChatMessage,
-  ToolCall,
   Plan,
   ResourceNode,
   AgentActivityItem,
@@ -47,8 +46,12 @@ interface Props {
   onResetChat?: () => void;
 }
 
-const INFRA_AGENT_MODEL = "gpt-4.1-mini";
+const CLOUDOPS_AGENT_MODEL = "gpt-4.1-mini";
 const USER_INITIALS = "LB";
+const DIFF_JSON_PATTERN =
+  /(Infrastructure JSON:\s*```(?:json)?[\s\S]*?```|```json[\s\S]*?```)/gi;
+const DIFF_JSON_DETECT_PATTERN =
+  /(Infrastructure JSON:\s*```(?:json)?[\s\S]*?```|```json[\s\S]*?```)/i;
 
 type Tab = "chat" | "plan" | "logs";
 
@@ -100,7 +103,46 @@ function getWorkedDuration(msg: ChatMessage) {
   return formatWorkedDuration(endedAt - startedAt);
 }
 
-function UserBubble({ content }: { content: string }) {
+function DiffJsonNugget() {
+  return (
+    <span className="inline-flex items-center rounded-md border border-cyan-400/40 bg-cyan-500/15 px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wide text-cyan-200">
+      Diff JSON
+    </span>
+  );
+}
+
+function ResourceContextNugget({ node }: { node: ResourceNode }) {
+  return (
+    <span
+      title={`${node.name} (${node.type})`}
+      className="inline-flex max-w-[180px] items-center gap-1 rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[9px] font-medium text-cyan-100"
+    >
+      <span className="truncate">{node.name}</span>
+      <span className="shrink-0 text-cyan-500">
+        {node.type.split("/").pop()}
+      </span>
+    </span>
+  );
+}
+
+function formatUserContent(content: string) {
+  return content
+    .replace(DIFF_JSON_PATTERN, "")
+    .replace(/\s*Infrastructure JSON:\s*$/i, "")
+    .trim();
+}
+
+function UserBubble({
+  content,
+  contextNodes = [],
+}: {
+  content: string;
+  contextNodes?: ResourceNode[];
+}) {
+  const hasDiffJson = DIFF_JSON_DETECT_PATTERN.test(content);
+  const visibleContent = formatUserContent(content);
+  const hasContext = hasDiffJson || contextNodes.length > 0;
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
@@ -112,7 +154,16 @@ function UserBubble({ content }: { content: string }) {
         </span>
       </div>
       <div className="rounded-lg border border-slate-800 bg-[#1a2234] px-3 py-2 text-xs leading-relaxed text-slate-200 break-words">
-        {content}
+        <span className="whitespace-pre-wrap">{visibleContent}</span>
+        {hasContext && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-700/60 pt-2 text-[10px] text-slate-500">
+            <span>Context:</span>
+            {hasDiffJson && <DiffJsonNugget />}
+            {contextNodes.map((node) => (
+              <ResourceContextNugget key={node.id} node={node} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -142,11 +193,11 @@ function AgentMessage({
             {
               id: "stream-starting",
               kind: "agent" as const,
-              agent: "infra-analyzer",
-              model: INFRA_AGENT_MODEL,
+              agent: "infra-reader-agent",
+              model: CLOUDOPS_AGENT_MODEL,
               status: "running" as const,
-              summary: "Invoking infra-analyzer",
-              message: "Invoking infra-analyzer...",
+              summary: "Invoking infra-reader-agent",
+              message: "Invoking infra-reader-agent...",
             },
           ]
         : undefined;
@@ -158,7 +209,7 @@ function AgentMessage({
         <span className="font-semibold uppercase tracking-wider text-slate-300">
           InfraMapper
         </span>
-        <span className="text-slate-500">◇ {formatModelName(INFRA_AGENT_MODEL)}</span>
+        <span className="text-slate-500">◇ {formatModelName(CLOUDOPS_AGENT_MODEL)}</span>
         {workedDuration && (
           <span className="ml-auto text-slate-500">{workedDuration}</span>
         )}
@@ -383,8 +434,8 @@ export default function ChatPanel({
               {
                 id: "agent-response",
                 kind: "agent" as const,
-                agent: "infra-analyzer",
-                model: INFRA_AGENT_MODEL,
+                agent: "infra-reader-agent",
+                model: CLOUDOPS_AGENT_MODEL,
                 status,
                 summary:
                   status === "failed"
@@ -436,8 +487,14 @@ export default function ChatPanel({
     });
   }
 
+  useLayoutEffect(() => {
+    if (activeTab !== "chat") return;
+    bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [activeTab]);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (activeTab !== "chat") return;
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, activeTab]);
 
   useEffect(() => {
@@ -474,7 +531,7 @@ export default function ChatPanel({
     contextNodes.forEach((n) => onRemoveContext?.(n.id));
     const newMessages: ChatMessage[] = [
       ...collapsePreviousAgentRich(messages),
-      { role: "user", content: text },
+      { role: "user", content: text, contextNodes: [...contextNodes] },
       {
         role: "agent",
         content: "",
@@ -605,16 +662,10 @@ export default function ChatPanel({
     );
   }
 
-  const approvedPlanIdRef = useRef<string | null>(null);
-
   function handlePlanApproved(planId?: string) {
     if (planId) {
       markPlanStatus(planId, "approved");
-      approvedPlanIdRef.current = planId;
     }
-    setTimeout(() => {
-      handleResumeAfterApproval();
-    }, 300);
   }
 
   function handlePlanRejected(planId?: string) {
@@ -714,105 +765,6 @@ export default function ChatPanel({
     }
   }
 
-  async function handleResumeAfterApproval() {
-    setLoading(true);
-    onMessagesChange((prev) => [
-      ...collapsePreviousAgentRich(prev),
-      {
-        role: "agent",
-        content: "",
-        toolCalls: [],
-        isStreaming: true,
-        richCollapsed: false,
-      },
-    ]);
-    try {
-      for await (const evt of streamChat(
-        "execute approved plan",
-        subscriptionId,
-        sessionId,
-      )) {
-        if (evt.type === "tool_call") {
-          onMessagesChange((prev) => {
-            const msgs = [...prev];
-            const last = msgs[msgs.length - 1];
-            msgs[msgs.length - 1] = {
-              ...last,
-              toolCalls: [
-                ...(last.toolCalls ?? []),
-                { tool: evt.data.tool, done: false },
-              ],
-            };
-            return msgs;
-          });
-        } else if (evt.type === "tool_result") {
-          onMessagesChange((prev) => {
-            const msgs = [...prev];
-            const last = msgs[msgs.length - 1];
-            msgs[msgs.length - 1] = {
-              ...last,
-              toolCalls: last.toolCalls?.map((tc) =>
-                tc.tool === evt.data.tool && !tc.done
-                  ? { ...tc, done: true, success: evt.data.success }
-                  : tc,
-              ),
-            };
-            return msgs;
-          });
-        } else if (evt.type === "plan") {
-          const plan: Plan = {
-            planId: evt.data.plan_id,
-            title: evt.data.title,
-            operations: evt.data.operations,
-            riskLevel: evt.data.risk_level as Plan["riskLevel"],
-            estimatedCostNote: evt.data.estimated_cost_note,
-            criticVerdict: evt.data.critic_verdict,
-            revisionCount: evt.data.revision_count,
-            status: evt.data.status ?? "pending",
-          };
-          onMessagesChange((prev) => {
-            const msgs = [...prev];
-            const last = msgs[msgs.length - 1];
-            msgs[msgs.length - 1] = {
-              ...last,
-              plan,
-              plans: [...(last.plans ?? []).filter((p) => p.planId !== plan.planId), plan],
-            };
-            return msgs;
-          });
-        } else if (evt.type === "question") {
-          appendQuestion({
-            questionId: evt.data.question_id,
-            title: evt.data.title,
-            prompt: evt.data.prompt,
-            options: normalizeQuestionOptions(evt.data.options),
-            defaultValue: evt.data.default_value ?? undefined,
-            allowCustom: evt.data.allow_custom,
-            category: evt.data.category ?? undefined,
-            confirmationScope: evt.data.confirmation_scope ?? undefined,
-            originatingAgent: evt.data.originating_agent ?? undefined,
-            status: "pending",
-          });
-        } else if (evt.type === "activity_start") handleActivityStart(evt.data);
-        else if (evt.type === "activity_end") handleActivityEnd(evt.data);
-        else if (evt.type === "reply") {
-          finishLatestAgentMessage(evt.data.content);
-          if (approvedPlanIdRef.current) {
-            markPlanStatus(approvedPlanIdRef.current, "completed");
-            approvedPlanIdRef.current = null;
-          }
-          onDeploymentComplete();
-        } else if (evt.type === "usage")
-          onTokenUsage({
-            input: evt.data.input_tokens,
-            output: evt.data.output_tokens,
-          });
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
   const latestPlan = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
@@ -845,7 +797,7 @@ export default function ChatPanel({
           </div>
           <span className="text-xs font-semibold text-slate-200">InfraMapper</span>
           <button className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-300 hover:bg-slate-800">
-            {formatModelName(INFRA_AGENT_MODEL)}
+            {formatModelName(CLOUDOPS_AGENT_MODEL)}
           </button>
         </div>
         <div className="flex items-center gap-3 px-3">
@@ -891,7 +843,11 @@ export default function ChatPanel({
             )}
             {messages.map((msg, i) =>
               msg.role === "user" ? (
-                <UserBubble key={i} content={msg.content} />
+                <UserBubble
+                  key={i}
+                  content={msg.content}
+                  contextNodes={msg.contextNodes}
+                />
               ) : (
                 <AgentMessage
                   key={i}

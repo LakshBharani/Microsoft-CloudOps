@@ -18,17 +18,17 @@ from semantic_kernel.agents import AzureAIAgent
 from semantic_kernel.exceptions.agent_exceptions import AgentInvokeException
 
 from app.constants import Constants
-from app.plugins.infra_analyzer_plugin import (
-    InfraAnalyzerPlugin,
-    reset_tool_event_handler,
-    set_tool_event_handler,
+from app.plugins.infra_reader_plugin import (
+    InfraReaderPlugin,
+    reset_infra_reader_tool_event_handler,
+    set_infra_reader_tool_event_handler,
 )
 
 
 load_dotenv(BACKEND_ROOT / ".env")
 
 ToolEventHandler = Callable[[str, str, str, bool | None], Awaitable[None]]
-INFRA_ANALYZER_INSTRUCTIONS = Constants.INFRA_ANALYZER_INSTRUCTIONS
+INFRA_READER_INSTRUCTIONS = Constants.INFRA_READER_INSTRUCTIONS
 
 
 def normalize_project_endpoint(value: str) -> str:
@@ -63,8 +63,8 @@ def default_subscription_id() -> str:
 def _kernel_with_agent_tools() -> Kernel:
     kernel = Kernel()
     kernel.add_plugin(
-        InfraAnalyzerPlugin(),
-        plugin_name=Constants.INFRA_ANALYZER_PLUGIN_NAME,
+        InfraReaderPlugin(),
+        plugin_name=Constants.INFRA_READER_PLUGIN_NAME,
     )
     return kernel
 
@@ -78,7 +78,7 @@ def _message_with_subscription(message: str, subscription_id: str) -> str:
     )
 
 
-async def ask_infra_analyzer(
+async def ask_infra_reader(
     message: str,
     subscription_id: str = "",
     on_tool_event: ToolEventHandler | None = None,
@@ -95,20 +95,20 @@ async def ask_infra_analyzer(
     ):
         agent_definition = await client.agents.create_agent(
             model=model_name,
-            name=Constants.INFRA_ANALYZER_AGENT,
-            instructions=INFRA_ANALYZER_INSTRUCTIONS,
+            name=Constants.INFRA_READER_AGENT,
+            instructions=INFRA_READER_INSTRUCTIONS,
         )
         print(f"Created agent, agent ID: {agent_definition.id}")
 
         agent = AzureAIAgent(client=client, definition=agent_definition)
         kernel = _kernel_with_agent_tools()
-        handler_token = set_tool_event_handler(on_tool_event)
+        handler_token = set_infra_reader_tool_event_handler(on_tool_event)
 
         try:
             response = await agent.get_response(messages=user_query, kernel=kernel)
             return str(response)
         finally:
-            reset_tool_event_handler(handler_token)
+            reset_infra_reader_tool_event_handler(handler_token)
             await client.agents.delete_agent(agent_definition.id)
             print(f"Deleted agent, agent ID: {agent_definition.id}")
 
@@ -120,8 +120,8 @@ async def main() -> None:
 
     print(f"# User: {user_query}")
     try:
-        response = await ask_infra_analyzer(user_query, subscription_id)
-        print(f"# infra-analyzer: {response}")
+        response = await ask_infra_reader(user_query, subscription_id)
+        print(f"# infra-reader-agent: {response}")
     except AgentInvokeException as exc:
         print(f"# Agent run failed: {exc}")
 

@@ -11,6 +11,10 @@ const TOOL_PHRASES: Record<string, { running: string; done: string }> = {
   get_resource_group_properties: { running: "reading resource group properties...", done: "reading resource group properties done" },
   analyze_resource_dependencies: { running: "analyzing resource dependencies...", done: "analyzing resource dependencies done" },
   analyze_resource_group_dependencies: { running: "analyzing resource group dependencies...", done: "analyzing resource group dependencies done" },
+  infer_intent: { running: "inferring infrastructure intent...", done: "infrastructure intent inferred" },
+  critic: { running: "checking plan failure points...", done: "plan failure points checked" },
+  brainstorm: { running: "brainstorming execution order...", done: "execution order brainstormed" },
+  propose_plan: { running: "organizing chronological plan...", done: "chronological plan organized" },
   trace_dependencies:       { running: "establishing dependency edges...",       done: "dependency graph built" },
   whatif_arm_template:      { running: "simulating deployment impact...",        done: "what-if analysis complete" },
   create_plan:              { running: "cooking up a plan...",                   done: "plan drafted" },
@@ -25,8 +29,10 @@ const AGENT_PHRASES: Record<string, string> = {
   ReadAgent:    "reading infrastructure",
   PlanAgent:    "drafting operations plan",
   ExecuteAgent: "executing approved changes",
-  "infra-analyzer": "invoking infra-analyzer",
-  "dependency-analyzer": "invoking dependency-analyzer",
+  "infra-reader-agent": "invoking infra-reader-agent",
+  "infra-crawler-agent": "invoking infra-crawler-agent",
+  "infra-planner-agent": "invoking infra-planner-agent",
+  "infra-builder-agent": "invoking infra-builder-agent",
 };
 
 const GROUP_CHAT_PHRASE = "invoking cloudops group chat";

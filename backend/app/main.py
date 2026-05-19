@@ -36,6 +36,10 @@ class AgentChatRequest(BaseModel):
     sessionId: str | None = None
 
 
+class QuestionAnswerRequest(BaseModel):
+    answer: str
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -79,6 +83,26 @@ def _sse_event(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
+def _plan_event(plan: dict[str, Any] | None, session_id: str) -> dict[str, Any] | None:
+    if not plan:
+        return None
+
+    return {
+        "type": "plan",
+        "data": {
+            "plan_id": f"plan-{uuid.uuid4()}",
+            "title": str(plan.get("title") or "Proposed Azure infrastructure plan"),
+            "operations": plan.get("operations") or [],
+            "risk_level": str(plan.get("risk_level") or "Low"),
+            "estimated_cost_note": plan.get("estimated_cost_note"),
+            "critic_verdict": plan.get("critic_verdict"),
+            "revision_count": int(plan.get("revision_count") or 0),
+            "status": str(plan.get("status") or "pending"),
+            "session_id": session_id,
+        },
+    }
+
+
 @app.post("/api/agent/stream")
 async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
     subscription_id = _resolve_subscription_id(request.subscriptionId)
@@ -90,9 +114,11 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
         async def on_tool_event(tool: str, invocation_id: str, phase: str, success: bool | None) -> None:
             activity_id = f"tool-{invocation_id}"
             tool_agent = (
-                Constants.DEPENDENCY_ANALYZER_AGENT
+                Constants.INFRA_CRAWLER_AGENT
                 if tool.startswith("analyze_")
-                else Constants.INFRA_ANALYZER_AGENT
+                else Constants.INFRA_PLANNER_AGENT
+                if tool in {"infer_intent", "critic", "brainstorm", "propose_plan"}
+                else Constants.INFRA_READER_AGENT
             )
             if phase == "start":
                 await queue.put({"type": "tool_call", "data": {"tool": tool, "session_id": session_id}})
@@ -148,7 +174,7 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         },
                     }
                 )
-                reply = await ask_cloudops_group_chat(
+                result = await ask_cloudops_group_chat(
                     request.message,
                     subscription_id=subscription_id,
                     on_tool_event=on_tool_event,
@@ -166,7 +192,10 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         },
                     }
                 )
-                await queue.put({"type": "reply", "data": {"content": reply, "session_id": session_id}})
+                plan_event = _plan_event(result.plan, session_id)
+                if plan_event:
+                    await queue.put(plan_event)
+                await queue.put({"type": "reply", "data": {"content": result.reply, "session_id": session_id}})
             except Exception as exc:
                 await queue.put(
                     {
@@ -197,6 +226,35 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
             await task
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/agent/plan/{plan_id}/approve")
+async def approve_plan(plan_id: str, sessionId: str = Query(default="")) -> dict[str, str | bool]:
+    return {"approved": True, "planId": plan_id, "sessionId": sessionId}
+
+
+@app.post("/api/agent/plan/{plan_id}/reject")
+async def reject_plan(plan_id: str) -> dict[str, str | bool]:
+    return {"rejected": True, "planId": plan_id}
+
+
+@app.delete("/api/agent/session/{session_id}")
+async def reset_agent_session(session_id: str) -> dict[str, str | bool]:
+    return {"reset": True, "sessionId": session_id}
+
+
+@app.post("/api/agent/question/{question_id}/answer")
+async def answer_question(
+    question_id: str,
+    request: QuestionAnswerRequest,
+    sessionId: str = Query(default=""),
+) -> dict[str, str | bool]:
+    return {
+        "answered": True,
+        "questionId": question_id,
+        "sessionId": sessionId,
+        "answer": request.answer,
+    }
 
 
 @app.post("/api/diff")

@@ -86,6 +86,7 @@ export interface Plan {
 export interface ChatMessage {
   role: "user" | "agent";
   content: string;
+  contextNodes?: ResourceNode[];
   toolCalls?: ToolCall[];
   plan?: Plan;
   plans?: Plan[];
