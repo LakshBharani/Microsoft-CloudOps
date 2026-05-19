@@ -41,9 +41,9 @@ export default function DevOpsSettings({ config, onChange, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-[440px] bg-[#161b27] border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+      <div className="w-[440px] bg-[#0f1421] border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-700">
-          <GitBranch size={14} className="text-blue-400" />
+          <GitBranch size={14} className="text-cyan-400" />
           <span className="text-sm font-semibold text-slate-200">Azure DevOps Connection</span>
           <button onClick={onClose} className="ml-auto text-slate-500 hover:text-slate-300">
             <X size={14} />
@@ -66,7 +66,7 @@ export default function DevOpsSettings({ config, onChange, onClose }: Props) {
                 value={draft[key]}
                 onChange={(e) => set(key, e.target.value)}
                 placeholder={placeholder}
-                className="w-full bg-[#1e293b] border border-slate-600 rounded px-3 py-1.5 text-xs text-slate-200 placeholder-slate-600 outline-none focus:border-blue-500"
+                className="w-full bg-[#0f172a] border border-slate-700 rounded px-3 py-1.5 text-xs text-slate-200 placeholder-slate-600 outline-none focus:border-cyan-500"
               />
             </div>
           ))}
@@ -82,7 +82,7 @@ export default function DevOpsSettings({ config, onChange, onClose }: Props) {
           </button>
           <button
             onClick={handleSave}
-            className="flex items-center gap-1.5 text-xs bg-blue-700 hover:bg-blue-600 text-white px-4 py-1.5 rounded transition-colors"
+            className="flex items-center gap-1.5 text-xs bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-semibold px-4 py-1.5 rounded transition-colors"
           >
             <Save size={11} />
             Save

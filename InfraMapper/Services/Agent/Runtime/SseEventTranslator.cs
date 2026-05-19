@@ -113,7 +113,7 @@ public sealed class SseEventTranslator
         {
             yield return Evt("error", new
             {
-                message = "Azure AI Foundry agent returned an empty response. Check that MCP tool calls are auto-approved or allowed for API runs, and verify the hosted agent can access CloudOpsMCP.",
+                message = "Agent returned an empty response. Check the agent skill files and Azure OpenAI deployment configuration.",
                 session_id = _sessionId
             });
             yield break;

@@ -31,7 +31,7 @@ export default function QuestionCard({ question, sessionId, onAnswered }: Props)
   }
 
   return (
-    <div className="mt-2 overflow-hidden rounded-lg border border-amber-800/70 bg-[#0f1117] text-xs">
+    <div className="mt-2 overflow-hidden rounded-lg border border-amber-800/70 bg-[#0f1421] text-xs">
       <div className="border-b border-amber-900/70 bg-slate-900 px-3 py-2.5">
         <div className="flex items-start gap-2">
           <div className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-amber-800 bg-amber-950 text-amber-300">

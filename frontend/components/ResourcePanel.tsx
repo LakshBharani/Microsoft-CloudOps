@@ -14,7 +14,7 @@ export default function ResourcePanel({ node, onClose }: Props) {
   const meta = getResourceMeta(node.type);
 
   return (
-    <div className="w-80 flex-shrink-0 bg-[#161b27] border-l border-slate-700 flex flex-col overflow-hidden">
+    <div className="w-80 flex-shrink-0 bg-[#0f1421] border-l border-slate-700 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
         <div>
           <span className="text-xs font-semibold px-1.5 py-0.5 rounded mr-2" style={{ color: meta.color, background: meta.bg }}>

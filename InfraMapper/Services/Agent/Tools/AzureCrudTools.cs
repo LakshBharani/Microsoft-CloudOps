@@ -128,6 +128,82 @@ public sealed class AzureCrudTools
 
         return Ok("resources_found", new { matches });
     }
+    [Description("Trace dependency edges of one Azure resource via depth-bounded BFS over the cached infrastructure graph. Read-only. Use during stage 3 TRACE NETS before drafting any plan that touches networked or referenced resources.")]
+    public async Task<string> TraceDependenciesAsync(
+        [Description("Full ARM resource id to start the trace from.")] string resource_id,
+        [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscription_id = null,
+        [Description("BFS depth limit. 1 = direct neighbors only. 2 = neighbors of neighbors. Max 5.")] int depth = 2,
+        [Description("Edge direction to walk: 'out' (this resource depends on others), 'in' (others depend on this), or 'both'.")] string direction = "both",
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(resource_id))
+            return Error("missing_resource_id", "resource_id is required.");
+
+        var d = Math.Clamp(depth, 1, 5);
+        var dir = direction?.Trim().ToLowerInvariant() ?? "both";
+        if (dir != "in" && dir != "out" && dir != "both")
+            return Error("invalid_direction", "direction must be 'in', 'out', or 'both'.");
+
+        var graph = await _resourceService.GetInfrastructureGraphSummaryAsync(Subscription(subscription_id), null, cancellationToken);
+        var nodeById = graph.Nodes.ToDictionary(n => n.Id, n => n, StringComparer.OrdinalIgnoreCase);
+        if (!nodeById.ContainsKey(resource_id))
+            return Error("not_found", $"resource_id '{resource_id}' is not in the infrastructure graph.");
+
+        var outAdj = graph.Edges
+            .GroupBy(e => e.SourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToArray(), StringComparer.OrdinalIgnoreCase);
+        var inAdj = graph.Edges
+            .GroupBy(e => e.TargetId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToArray(), StringComparer.OrdinalIgnoreCase);
+
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { resource_id };
+        var collectedEdges = new List<DependencyEdge>();
+        var queue = new Queue<(string id, int depth)>();
+        queue.Enqueue((resource_id, 0));
+        var maxDepthReached = 0;
+
+        while (queue.Count > 0)
+        {
+            var (id, currentDepth) = queue.Dequeue();
+            if (currentDepth >= d) continue;
+
+            var neighbors = new List<DependencyEdge>();
+            if ((dir == "out" || dir == "both") && outAdj.TryGetValue(id, out var outs)) neighbors.AddRange(outs);
+            if ((dir == "in" || dir == "both") && inAdj.TryGetValue(id, out var ins)) neighbors.AddRange(ins);
+
+            foreach (var edge in neighbors)
+            {
+                collectedEdges.Add(edge);
+                var other = string.Equals(edge.SourceId, id, StringComparison.OrdinalIgnoreCase) ? edge.TargetId : edge.SourceId;
+                if (visited.Add(other))
+                {
+                    queue.Enqueue((other, currentDepth + 1));
+                    if (currentDepth + 1 > maxDepthReached) maxDepthReached = currentDepth + 1;
+                }
+            }
+        }
+
+        var nodes = visited
+            .Where(id => nodeById.ContainsKey(id))
+            .Select(id => nodeById[id])
+            .ToArray();
+
+        var dedupedEdges = collectedEdges
+            .GroupBy(e => $"{e.SourceId}|{e.TargetId}|{e.DependencyType}", StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToArray();
+
+        return Ok("dependencies_traced", new
+        {
+            root = resource_id,
+            depth_requested = d,
+            depth_reached = maxDepthReached,
+            direction = dir,
+            nodes,
+            edges = dedupedEdges,
+            summary = $"Traced {nodes.Length} node(s), {dedupedEdges.Length} edge(s), depth ≤ {maxDepthReached}."
+        });
+    }
     [Description("Create a pending plan card. MANDATORY before any Azure write/update/delete. The card is shown to the user and execution blocks until the user clicks Run plan. Never reply with text-only confirmations for write/delete intents — always call this tool.")]
     public string CreatePlan(
         [Description("Short one-sentence goal of the plan. Example: 'Delete unused resource group rg-im-lite'.")] string title = "Azure infrastructure plan",
@@ -263,6 +339,102 @@ public sealed class AzureCrudTools
 
         var result = await _deployments.CreateOrUpdateAsync(input, cancellationToken);
         return DeploymentResult(result);
+    }
+
+    [Description("Run ARM what-if analysis. Predicts which resources would be created, modified, deleted, or unchanged if this template were deployed. Read-only — does not deploy. Call before deploy_arm_template to validate impact.")]
+    public async Task<string> WhatIfArmTemplateAsync(
+        [Description("Azure subscription id. Uses request subscription when omitted.")] string? subscriptionId = null,
+        [Description("Resource group for resource-group-scoped what-if. Omit for subscription-scoped what-if.")] string? resourceGroupName = null,
+        [Description("Deployment location for subscription-scoped what-if.")] string? location = null,
+        [Description("Optional deployment name. Generated if omitted.")] string? deploymentName = null,
+        [Description("ARM template object.")] Dictionary<string, object?>? template = null,
+        [Description("ARM parameters object. Use {} when none.")] Dictionary<string, object?>? parameters = null,
+        [Description("Deployment mode: Incremental or Complete.")] string mode = "Incremental",
+        CancellationToken cancellationToken = default)
+    {
+        var templateJson = JsonOrNull(template);
+        var parametersJson = JsonOrNull(parameters) ?? "{}";
+        resourceGroupName = string.IsNullOrWhiteSpace(resourceGroupName) ? null : resourceGroupName;
+
+        if (TryGetLatestPlanDeploymentDefaults(
+                out var planTemplateJson,
+                out var planParametersJson,
+                out var planResourceGroupName,
+                out var planLocation,
+                out var planDeploymentName,
+                out var planCreatesResourceGroup))
+        {
+            if (string.IsNullOrWhiteSpace(templateJson)) templateJson = planTemplateJson;
+            parametersJson = string.IsNullOrWhiteSpace(parametersJson) || parametersJson == "{}"
+                ? planParametersJson
+                : parametersJson;
+            if (!planCreatesResourceGroup) resourceGroupName ??= planResourceGroupName;
+            location ??= planLocation;
+            deploymentName = string.IsNullOrWhiteSpace(deploymentName) ? planDeploymentName : deploymentName;
+        }
+
+        if (string.IsNullOrWhiteSpace(templateJson))
+            return Error("missing_template", "template is required for what-if analysis.");
+
+        location ??= TryGetTemplateLocation(templateJson);
+
+        var input = new ArmDeploymentApplyInput
+        {
+            SubscriptionId = Subscription(subscriptionId),
+            ResourceGroupName = resourceGroupName,
+            DeploymentName = string.IsNullOrWhiteSpace(deploymentName)
+                ? $"whatif-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}"
+                : deploymentName,
+            TemplateJson = templateJson,
+            ParametersJson = string.IsNullOrWhiteSpace(parametersJson) ? "{}" : parametersJson,
+            Mode = mode,
+            WaitForCompletion = true,
+            Location = location
+        };
+
+        var result = await _deployments.WhatIfAsync(input, cancellationToken);
+
+        if (!result.Succeeded
+            && !string.IsNullOrWhiteSpace(input.ResourceGroupName)
+            && (result.ErrorCode?.Contains("ResourceGroupNotFound", StringComparison.OrdinalIgnoreCase) == true
+                || result.ErrorMessage?.Contains("ResourceGroupNotFound", StringComparison.OrdinalIgnoreCase) == true
+                || result.ErrorMessage?.Contains("could not be found", StringComparison.OrdinalIgnoreCase) == true))
+        {
+            var fallback = new ArmDeploymentApplyInput
+            {
+                SubscriptionId = input.SubscriptionId,
+                ResourceGroupName = null,
+                DeploymentName = input.DeploymentName,
+                TemplateJson = WrapResourceGroupResourcesForSubscriptionDeployment(input.TemplateJson, input.ResourceGroupName, input.Location),
+                ParametersJson = input.ParametersJson,
+                Mode = input.Mode,
+                WaitForCompletion = true,
+                Location = input.Location
+            };
+            result = await _deployments.WhatIfAsync(fallback, cancellationToken);
+            if (!result.Succeeded)
+                return Error("whatif_failed", $"Subscription-scope fallback also failed: {result.ErrorMessage ?? result.ErrorCode}");
+
+            return Ok("whatif_completed", new
+            {
+                scope = result.Scope,
+                deployment_name = result.DeploymentName,
+                summary = result.Summary,
+                changes = result.Changes,
+                note = $"Subscription-scoped what-if used because resource group '{input.ResourceGroupName}' does not yet exist. Template wrapped to create the rg first."
+            });
+        }
+
+        if (!result.Succeeded)
+            return Error("whatif_failed", result.ErrorMessage ?? result.ErrorCode ?? "What-if analysis failed.");
+
+        return Ok("whatif_completed", new
+        {
+            scope = result.Scope,
+            deployment_name = result.DeploymentName,
+            summary = result.Summary,
+            changes = result.Changes
+        });
     }
 
     private bool TryGetLatestPlanDeploymentDefaults(

@@ -2,18 +2,28 @@
 
 import type { AgentActivityItem } from "@/lib/types";
 
-const TOOL_PHRASES: Record<string, string> = {
-  decompose_intent: "Decomposing intent into blocks",
-  list_resource_groups: "Reading resource groups",
-  list_resources: "Inspecting resources",
-  ask_clarifying_question: "Asking clarification",
-  get_resource: "Reading resource",
-  find_resource: "Finding resource",
-  get_deployment_status: "Checking deployment status",
-  create_plan: "Drafting plan",
-  create_or_update_resource: "Applying resource change",
-  delete_resource: "Deleting resource",
-  deploy_arm_template: "Deploying ARM template",
+const TOOL_PHRASES: Record<string, { running: string; done: string }> = {
+  list_resource_groups:     { running: "scanning resource groups...",            done: "scanning resource groups done" },
+  find_resource_group:      { running: "finding resource group...",              done: "finding resource group done" },
+  list_resources:           { running: "scanning resource inventory...",         done: "scanning resource inventory done" },
+  find_resource:            { running: "finding resource...",                    done: "finding resource done" },
+  get_resource_properties:  { running: "reading resource properties...",         done: "reading resource properties done" },
+  get_resource_group_properties: { running: "reading resource group properties...", done: "reading resource group properties done" },
+  trace_dependencies:       { running: "establishing dependency edges...",       done: "dependency graph built" },
+  whatif_arm_template:      { running: "simulating deployment impact...",        done: "what-if analysis complete" },
+  create_plan:              { running: "cooking up a plan...",                   done: "plan drafted" },
+  ask_clarifying_question:  { running: "raising clarification...",              done: "question raised" },
+  create_or_update_resource:{ running: "applying resource change...",            done: "resource committed" },
+  delete_resource:          { running: "removing resource...",                   done: "resource deleted" },
+  deploy_arm_template:      { running: "deploying arm template...",              done: "template deployed" },
+  get_deployment_status:    { running: "checking deployment status...",          done: "deployment verified" },
+};
+
+const AGENT_PHRASES: Record<string, string> = {
+  ReadAgent:    "reading infrastructure",
+  PlanAgent:    "drafting operations plan",
+  ExecuteAgent: "executing approved changes",
+  "infra-analyzer": "invoking infra-analyzer",
 };
 
 const COMMIT_TOOLS = new Set([
@@ -54,63 +64,45 @@ export function deriveLines(activities: AgentActivityItem[] | undefined): Termin
           : "done";
 
     if (item.kind === "agent") {
+      const agentPhrase = item.agent ? (AGENT_PHRASES[item.agent] ?? item.agent) : "Agent working";
       if (item.status === "running") {
-        lines.push({
-          id: item.id,
-          text: `${item.summary || "InfraMapper agent working"}...`,
-          state: "running",
-        });
+        lines.push({ id: item.id, text: `${agentPhrase}...`, state: "running" });
       } else if (item.status === "failed") {
-        lines.push({
-          id: item.id,
-          text: `Agent failed: ${item.message ?? item.summary}`,
-          state: "failed",
-        });
+        lines.push({ id: item.id, text: `${agentPhrase} failed: ${item.message ?? item.summary}`, state: "failed" });
+      } else {
+        lines.push({ id: item.id, text: `${agentPhrase} done`, state: "done" });
       }
       continue;
     }
 
     if (item.kind === "tool" && item.tool) {
-      const phrase = TOOL_PHRASES[item.tool] ?? item.tool;
+      const phrases = TOOL_PHRASES[item.tool];
+      const runningText = phrases?.running ?? `${item.tool}...`;
+      const doneText = phrases?.done ?? item.tool;
+
       if (item.status === "running") {
-        lines.push({
-          id: item.id,
-          text: `${phrase}...`,
-          state: "running",
-        });
+        lines.push({ id: item.id, text: runningText, state: "running" });
         continue;
       }
       if (item.status === "failed") {
         lines.push({
           id: item.id,
-          text: `${phrase} failed${item.message ? `: ${item.message}` : ""}`,
+          text: `${doneText} failed${item.message ? `: ${item.message}` : ""}`,
           state: "failed",
         });
         continue;
       }
       if (COMMIT_TOOLS.has(item.tool) && item.status === "success") {
         commitCount += 1;
-        lines.push({
-          id: item.id,
-          text: `Committed [${commitCount}] ${extractResourceLabel(item)}`,
-          state: "done",
-        });
+        lines.push({ id: item.id, text: `Committed [${commitCount}] ${extractResourceLabel(item)}`, state: "done" });
         continue;
       }
       if (DELETE_TOOLS.has(item.tool) && item.status === "success") {
         commitCount += 1;
-        lines.push({
-          id: item.id,
-          text: `Deleted [${commitCount}] ${extractResourceLabel(item)}`,
-          state: "done",
-        });
+        lines.push({ id: item.id, text: `Deleted [${commitCount}] ${extractResourceLabel(item)}`, state: "done" });
         continue;
       }
-      lines.push({
-        id: item.id,
-        text: `${phrase} done`,
-        state: baseState,
-      });
+      lines.push({ id: item.id, text: doneText, state: baseState });
       continue;
     }
 
@@ -148,10 +140,13 @@ export default function TerminalStream({
     ) : null;
   }
 
+  const seen = new Set<string>();
+  const deduped = lines.filter((l) => (seen.has(l.id) ? false : (seen.add(l.id), true)));
+
   return (
     <ul className="space-y-1 font-mono text-[11px] leading-relaxed">
-      {lines.map((line) => (
-        <li key={line.id} className="flex items-start gap-2">
+      {deduped.map((line, idx) => (
+        <li key={`${line.id}-${idx}`} className="flex items-start gap-2">
           <span
             className={
               line.state === "running"

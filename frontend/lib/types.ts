@@ -80,7 +80,7 @@ export interface Plan {
   estimatedCostNote?: string;
   revisionCount?: number;
   criticVerdict?: string;
-  status?: "pending" | "approved" | "rejected";
+  status?: "pending" | "approved" | "rejected" | "completed";
 }
 
 export interface ChatMessage {
@@ -152,8 +152,6 @@ export type AgentStreamEvent =
   | { type: "reply"; data: { content: string; session_id: string } }
   | { type: "usage"; data: { input_tokens: number; output_tokens: number; session_id: string } }
   | { type: "error"; data: { message: string; session_id: string } }
-  | { type: "agent_call"; data: { agent: string; model: string; iteration: number; parent_tool_call_id?: string; session_id: string } }
-  | { type: "agent_result"; data: { agent: string; success: boolean; iteration: number; input_tokens: number; output_tokens: number; session_id: string } }
   | { type: "activity_start"; data: { id: string; parent_id?: string | null; kind: AgentActivityItem["kind"]; agent?: string | null; tool?: string | null; model?: string | null; status: AgentActivityItem["status"]; summary: string; detail_preview?: string | null; error_type?: string | null; message?: string | null; session_id: string } }
   | { type: "activity_end"; data: { id: string; parent_id?: string | null; kind?: AgentActivityItem["kind"]; agent?: string | null; tool?: string | null; model?: string | null; status: AgentActivityItem["status"]; summary: string; detail_preview?: string | null; error_type?: string | null; message?: string | null; session_id: string } }
   | { type: "question"; data: { question_id: string; title: string; prompt: string; options: ClarifyingQuestionOption[]; default_value?: string | null; allow_custom: boolean; category?: string | null; confirmation_scope?: string | null; originating_agent?: string | null; session_id: string } };

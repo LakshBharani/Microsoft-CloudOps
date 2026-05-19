@@ -79,11 +79,11 @@ export default function Home() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-[#0f1117] text-slate-200 overflow-hidden">
+    <div className="h-screen flex flex-col bg-[#0b1018] text-slate-200 overflow-hidden">
       {/* Topbar */}
-      <header className="flex items-center gap-4 px-4 py-2 bg-[#161b27] border-b border-slate-700 flex-shrink-0">
+      <header className="flex items-center gap-4 px-4 py-2 bg-[#0f1421] border-b border-slate-700 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <Network size={18} className="text-blue-400" />
+          <Network size={18} className="text-cyan-400" />
           <span className="font-semibold text-sm tracking-tight">InfraMapper</span>
         </div>
         <div className="flex items-center gap-2 flex-1 max-w-lg">
@@ -92,12 +92,12 @@ export default function Home() {
             onChange={(e) => setSubscriptionId(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Azure subscription ID"
-            className="flex-1 bg-[#1e293b] border border-slate-600 rounded px-3 py-1 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500"
+            className="flex-1 bg-[#0f172a] border border-slate-700 rounded px-3 py-1 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-cyan-500"
           />
           <button
             onClick={() => loadGraph(subscriptionId)}
             disabled={loading || !subscriptionId.trim()}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs px-3 py-1 rounded transition-colors"
+            className="flex items-center gap-1.5 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-900 font-semibold text-xs px-3 py-1 rounded transition-colors"
           >
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
             {loading ? "Loading…" : "Load"}
@@ -106,7 +106,7 @@ export default function Home() {
             onClick={() => setShowDiff((s) => !s)}
             className={`flex items-center gap-1.5 text-xs px-3 py-1 rounded transition-colors border ${
               showDiff
-                ? "bg-blue-700 border-blue-500 text-white"
+                ? "bg-cyan-500 border-cyan-400 text-slate-900 font-semibold"
                 : "bg-transparent border-slate-600 text-slate-400 hover:text-slate-200 hover:border-slate-500"
             }`}
           >

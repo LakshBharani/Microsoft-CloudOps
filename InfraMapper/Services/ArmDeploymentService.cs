@@ -164,6 +164,102 @@ public sealed class ArmDeploymentService : IArmDeploymentService
         }
     }
 
+    public async Task<ArmWhatIfResult> WhatIfAsync(
+        ArmDeploymentApplyInput input,
+        CancellationToken cancellationToken = default)
+    {
+        var invalid = ValidateInput(input);
+        if (invalid is not null)
+            return new ArmWhatIfResult
+            {
+                Succeeded = false,
+                Scope = invalid.Scope,
+                DeploymentName = invalid.DeploymentName,
+                ErrorCode = invalid.ErrorCode,
+                ErrorMessage = invalid.ErrorMessage
+            };
+
+        var scope = BuildScope(input.SubscriptionId, input.ResourceGroupName);
+
+        try
+        {
+            var properties = new ArmDeploymentWhatIfProperties(ParseMode(input.Mode))
+            {
+                Template = BinaryData.FromString(input.TemplateJson)
+            };
+            if (!string.IsNullOrWhiteSpace(input.ParametersJson))
+                properties.Parameters = BinaryData.FromString(input.ParametersJson);
+
+            var content = new ArmDeploymentWhatIfContent(properties);
+            if (IsSubscriptionScope(input) && !string.IsNullOrWhiteSpace(input.Location))
+                content.Location = new AzureLocation(input.Location);
+
+            var deploymentResource = _armClient.GetArmDeploymentResource(
+                ResourceIdentifier.Parse($"{scope}/providers/Microsoft.Resources/deployments/{input.DeploymentName}"));
+            var op = await deploymentResource
+                .WhatIfAsync(WaitUntil.Completed, content, cancellationToken)
+                .ConfigureAwait(false);
+            var raw = op.Value;
+            var summary = new ArmWhatIfSummary();
+            var changes = new List<ArmWhatIfChange>();
+            if (raw?.Changes is not null)
+            {
+                foreach (var c in raw.Changes)
+                {
+                    var type = c.ChangeType.ToString();
+                    switch (type)
+                    {
+                        case "Create": summary.Create++; break;
+                        case "Modify": summary.Modify++; break;
+                        case "Delete": summary.Delete++; break;
+                        case "NoChange": summary.NoChange++; break;
+                        case "Ignore": summary.Ignore++; break;
+                        case "Deploy": summary.Deploy++; break;
+                        case "Unsupported": summary.Unsupported++; break;
+                    }
+
+                    var delta = c.Delta?.Select(d => new ArmWhatIfPropertyChange
+                    {
+                        Path = d.Path,
+                        PropertyChangeType = d.PropertyChangeType.ToString(),
+                        Before = d.Before?.ToObjectFromJson<object>(),
+                        After = d.After?.ToObjectFromJson<object>()
+                    }).ToList();
+
+                    changes.Add(new ArmWhatIfChange
+                    {
+                        ResourceId = c.ResourceId,
+                        ChangeType = type,
+                        UnsupportedReason = c.UnsupportedReason,
+                        Delta = delta
+                    });
+                }
+            }
+
+            return new ArmWhatIfResult
+            {
+                Succeeded = raw?.Error is null,
+                Scope = scope,
+                DeploymentName = input.DeploymentName,
+                Changes = changes,
+                Summary = summary,
+                ErrorCode = raw?.Error?.Code,
+                ErrorMessage = raw?.Error?.Message
+            };
+        }
+        catch (RequestFailedException ex)
+        {
+            return new ArmWhatIfResult
+            {
+                Succeeded = false,
+                Scope = scope,
+                DeploymentName = input.DeploymentName,
+                ErrorCode = ex.ErrorCode,
+                ErrorMessage = ex.Message
+            };
+        }
+    }
+
     private static ArmDeploymentMode ParseMode(string? mode)
     {
         if (string.Equals(mode, "Complete", StringComparison.OrdinalIgnoreCase))

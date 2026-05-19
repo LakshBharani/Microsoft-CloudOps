@@ -26,35 +26,27 @@ function describeOp(op: PlanOperation) {
 interface Props {
   plan: Plan;
   sessionId: string;
-  onApproved: () => void;
-  onRejected: () => void;
+  onApproved: (planId: string) => void;
+  onRejected: (planId: string) => void;
   defaultDetailsOpen?: boolean;
 }
 
 export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Props) {
-  const [status, setStatus] = useState<"pending" | "approving" | "rejecting" | "approved" | "rejected">(
-    plan.status === "approved" ? "approved" : plan.status === "rejected" ? "rejected" : "pending",
+  const [status, setStatus] = useState<"pending" | "approving" | "rejecting" | "approved" | "rejected" | "completed">(
+    plan.status === "approved" ? "approved"
+      : plan.status === "rejected" ? "rejected"
+      : plan.status === "completed" ? "completed"
+      : "pending",
   );
-  const [disabled, setDisabled] = useState<Set<number>>(new Set());
 
-  const enabledCount = plan.operations.length - disabled.size;
-
-  function toggle(i: number) {
-    if (status !== "pending") return;
-    setDisabled((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i);
-      else next.add(i);
-      return next;
-    });
-  }
+  const opCount = plan.operations.length;
 
   async function handleApprove() {
     setStatus("approving");
     try {
       await approvePlan(plan.planId, sessionId);
       setStatus("approved");
-      onApproved();
+      onApproved(plan.planId);
     } catch {
       setStatus("pending");
     }
@@ -65,7 +57,7 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
     try {
       await rejectPlan(plan.planId);
       setStatus("rejected");
-      onRejected();
+      onRejected(plan.planId);
     } catch {
       setStatus("pending");
     }
@@ -79,7 +71,7 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
         <Sparkles size={12} className="text-cyan-400" />
         <span className="font-semibold uppercase tracking-wider text-cyan-300 text-[10px]">Plan</span>
         <span className="text-slate-500 text-[10px]">
-          · {enabledCount} of {plan.operations.length} ops enabled
+          · {opCount} op{opCount === 1 ? "" : "s"}
         </span>
         <span
           className={`ml-auto rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
@@ -103,34 +95,18 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
       <div className="px-1 py-1">
         {plan.operations.map((op, i) => {
           const label = badge(op.action);
-          const isDisabled = disabled.has(i);
           return (
-            <button
+            <div
               key={i}
-              onClick={() => toggle(i)}
-              disabled={status !== "pending"}
-              className={`flex w-full items-center gap-3 rounded px-2 py-1.5 text-left transition-colors ${
-                status === "pending" ? "hover:bg-slate-900/40" : ""
-              } ${isDisabled ? "opacity-40" : ""}`}
+              className="flex w-full items-center gap-3 rounded px-2 py-1.5"
             >
-              <span
-                className={`inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-sm border ${
-                  isDisabled
-                    ? "border-slate-600"
-                    : "border-slate-400 bg-slate-400"
-                }`}
-              >
-                {!isDisabled && (
-                  <CheckCircle2 size={9} className="text-slate-900" strokeWidth={3} />
-                )}
-              </span>
               <span className="flex-shrink-0 font-mono text-[10px] font-semibold text-slate-500 w-[70px]">
                 {label}
               </span>
               <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300">
                 {describeOp(op)}
               </span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -151,6 +127,14 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
           <div className="flex items-center gap-1.5 text-red-400 text-[11px]">
             <XCircle size={12} /> Dismissed
           </div>
+        ) : status === "completed" ? (
+          <div className="flex items-center gap-1.5 text-green-400 text-[11px]">
+            <CheckCircle2 size={12} /> Plan completed
+          </div>
+        ) : status === "approved" ? (
+          <div className="flex items-center gap-1.5 text-cyan-400 text-[11px]">
+            <Loader2 size={11} className="animate-spin" /> Plan running
+          </div>
         ) : (
           <>
             <button
@@ -162,16 +146,12 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
             </button>
             <button
               onClick={handleApprove}
-              disabled={running || status === "rejecting" || enabledCount === 0}
+              disabled={running || status === "rejecting" || opCount === 0}
               className="inline-flex items-center gap-1.5 rounded bg-cyan-500 px-3 py-1.5 text-[11px] font-semibold text-slate-900 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-400"
             >
               {status === "approving" ? (
                 <>
                   <Loader2 size={11} className="animate-spin" /> Starting...
-                </>
-              ) : status === "approved" ? (
-                <>
-                  <Loader2 size={11} className="animate-spin" /> Running...
                 </>
               ) : (
                 <>

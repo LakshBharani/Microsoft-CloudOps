@@ -1,6 +1,49 @@
 import type { InfrastructureGraph, AgentStreamEvent } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5059";
+const BASE = "";
+
+function streamBases(): string[] {
+  if (process.env.NEXT_PUBLIC_AGENT_STREAM_URL) {
+    return [process.env.NEXT_PUBLIC_AGENT_STREAM_URL];
+  }
+
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return [process.env.NEXT_PUBLIC_API_URL];
+  }
+
+  const bases = ["http://127.0.0.1:8000", "http://localhost:8000"];
+  if (typeof window !== "undefined") {
+    bases.push(`http://${window.location.hostname}:8000`);
+  }
+  bases.push(BASE);
+
+  return [...new Set(bases)];
+}
+
+async function openAgentStream(
+  message: string,
+  subscriptionId: string,
+  sessionId?: string,
+): Promise<Response> {
+  let lastError: unknown;
+
+  for (const base of streamBases()) {
+    try {
+      const res = await fetch(`${base}/api/agent/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, subscriptionId, sessionId }),
+      });
+
+      if (res.ok) return res;
+      lastError = new Error(`Agent error from ${base || "same-origin"}: ${res.statusText}`);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Agent stream failed");
+}
 
 export async function fetchGraph(subscriptionId: string): Promise<InfrastructureGraph> {
   const res = await fetch(`${BASE}/api/infra?subscriptionId=${subscriptionId}`);
@@ -13,13 +56,7 @@ export async function* streamChat(
   subscriptionId: string,
   sessionId?: string
 ): AsyncGenerator<AgentStreamEvent> {
-  const res = await fetch(`${BASE}/api/agent/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, subscriptionId, sessionId }),
-  });
-
-  if (!res.ok) throw new Error(`Agent error: ${res.statusText}`);
+  const res = await openAgentStream(message, subscriptionId, sessionId);
 
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();

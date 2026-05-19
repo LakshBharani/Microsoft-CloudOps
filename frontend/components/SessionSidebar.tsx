@@ -43,10 +43,10 @@ function SessionItem({ session, isActive, onSelect, onDelete, onRename, showDele
     <div
       onClick={() => { if (!editing) onSelect(); }}
       className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
-        isActive ? "bg-blue-900/40 border-r-2 border-blue-500" : "hover:bg-slate-800"
+        isActive ? "bg-cyan-950/40 border-r-2 border-cyan-500" : "hover:bg-slate-800"
       }`}
     >
-      <MessageSquare size={12} className={isActive ? "text-blue-400 flex-shrink-0" : "text-slate-500 flex-shrink-0"} />
+      <MessageSquare size={12} className={isActive ? "text-cyan-400 flex-shrink-0" : "text-slate-500 flex-shrink-0"} />
       {editing ? (
         <input
           ref={inputRef}
@@ -55,7 +55,7 @@ function SessionItem({ session, isActive, onSelect, onDelete, onRename, showDele
           onBlur={commit}
           onKeyDown={handleKeyDown}
           onClick={(e) => e.stopPropagation()}
-          className="flex-1 bg-slate-700 text-xs text-slate-200 px-1 py-0.5 rounded outline-none border border-blue-500 min-w-0"
+          className="flex-1 bg-slate-800 text-xs text-slate-200 px-1 py-0.5 rounded outline-none border border-cyan-500 min-w-0"
         />
       ) : (
         <span
@@ -80,10 +80,10 @@ function SessionItem({ session, isActive, onSelect, onDelete, onRename, showDele
 
 export default function SessionSidebar({ sessions, activeId, onSelect, onNew, onDelete, onRename }: Props) {
   return (
-    <div className="w-44 flex-shrink-0 flex flex-col bg-[#0f1117] border-l border-slate-700">
+    <div className="w-44 flex-shrink-0 flex flex-col bg-[#0b1018] border-l border-slate-700">
       <div className="px-3 py-2 border-b border-slate-700 flex items-center justify-between">
         <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Sessions</span>
-        <button onClick={onNew} className="text-slate-400 hover:text-blue-400 transition-colors" title="New session">
+        <button onClick={onNew} className="text-slate-400 hover:text-cyan-400 transition-colors" title="New session">
           <Plus size={14} />
         </button>
       </div>

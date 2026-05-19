@@ -29,7 +29,7 @@ export default function SessionTabs({ sessions, activeId, onSelect, onNew, onDel
   }
 
   return (
-    <div className="sticky top-0 z-20 flex h-10 flex-shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-slate-700 bg-[#101621] px-2">
+    <div className="sticky top-0 z-20 flex h-10 flex-shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-slate-700 bg-[#0b1018] px-2">
       {sessions.map((session) => {
         const active = session.id === activeId;
         return (
@@ -38,7 +38,7 @@ export default function SessionTabs({ sessions, activeId, onSelect, onNew, onDel
             onClick={() => onSelect(session.id)}
             onDoubleClick={() => beginRename(session)}
             className={`group flex h-full max-w-44 flex-shrink-0 items-center gap-2 rounded-t px-3 py-2 text-xs transition-colors ${
-              active ? "bg-[#161b27] text-slate-100" : "text-slate-500 hover:bg-slate-900 hover:text-slate-300"
+              active ? "bg-[#0f1421] text-slate-100" : "text-slate-500 hover:bg-slate-900 hover:text-slate-300"
             }`}
             title={session.name}
           >
@@ -52,7 +52,7 @@ export default function SessionTabs({ sessions, activeId, onSelect, onNew, onDel
                   if (e.key === "Enter") commitRename(session);
                   if (e.key === "Escape") setEditingId(null);
                 }}
-                className="w-28 rounded border border-blue-700 bg-slate-950 px-1 py-0.5 text-xs text-slate-200 outline-none"
+                className="w-28 rounded border border-cyan-500 bg-slate-950 px-1 py-0.5 text-xs text-slate-200 outline-none"
                 autoFocus
               />
             ) : (
@@ -71,7 +71,7 @@ export default function SessionTabs({ sessions, activeId, onSelect, onNew, onDel
           </button>
         );
       })}
-      <button onClick={onNew} className="rounded p-1.5 text-slate-500 hover:bg-slate-900 hover:text-blue-300" title="New session">
+      <button onClick={onNew} className="rounded p-1.5 text-slate-500 hover:bg-slate-900 hover:text-cyan-300" title="New session">
         <Plus size={14} />
       </button>
     </div>

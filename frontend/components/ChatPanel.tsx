@@ -127,8 +127,8 @@ function AgentMessage({
 }: {
   msg: ChatMessage;
   sessionId: string;
-  onApproved: () => void;
-  onRejected: () => void;
+  onApproved: (planId: string) => void;
+  onRejected: (planId: string) => void;
   onQuestionAnswered: (questionId: string, answer: string) => void;
 }) {
   const workedDuration = getWorkedDuration(msg);
@@ -142,11 +142,11 @@ function AgentMessage({
             {
               id: "stream-starting",
               kind: "agent" as const,
-              agent: "infra_agent",
+              agent: "infra-analyzer",
               model: INFRA_AGENT_MODEL,
               status: "running" as const,
-              summary: "Reading request",
-              message: "Starting work...",
+              summary: "Invoking infra-analyzer",
+              message: "Invoking infra-analyzer...",
             },
           ]
         : undefined;
@@ -369,62 +369,6 @@ export default function ChatPanel({
           : [...activities, fallback],
       };
     });
-    if (data.tool) onDeploymentComplete();
-  }
-
-  function handleAgentCall(
-    data: Extract<AgentStreamEvent, { type: "agent_call" }>["data"],
-  ) {
-    const id = data.parent_tool_call_id ?? `${data.agent}-${data.iteration}`;
-    upsertActivity({
-      id,
-      kind: "agent",
-      agent: data.agent,
-      model: data.model,
-      status: "running",
-      summary: `${data.agent} started`,
-      message: `Iteration ${data.iteration}`,
-      startedAt: Date.now(),
-    });
-  }
-
-  function handleAgentResult(
-    data: Extract<AgentStreamEvent, { type: "agent_result" }>["data"],
-  ) {
-    const id = `${data.agent}-${data.iteration}`;
-    updateLatestAgentMessage((msg) => {
-      const activities = msg.activities ?? [];
-      const existing = activities.find(
-        (p) =>
-          p.id === id || (p.agent === data.agent && p.status === "running"),
-      );
-      const resolvedId = existing?.id ?? id;
-      const patch: Partial<AgentActivityItem> = {
-        status: data.success ? "success" : "failed",
-        summary: data.success ? `${data.agent} completed` : `${data.agent} failed`,
-        message: `${data.input_tokens.toLocaleString()} in / ${data.output_tokens.toLocaleString()} out`,
-        endedAt: Date.now(),
-      };
-      return {
-        ...msg,
-        activities: existing
-          ? activities.map((p) =>
-              p.id === resolvedId ? { ...p, ...patch } : p,
-            )
-          : [
-              ...activities,
-              {
-                id: resolvedId,
-                kind: "agent",
-                agent: data.agent,
-                status: patch.status ?? "success",
-                summary: patch.summary ?? `${data.agent} completed`,
-                message: patch.message,
-                endedAt: patch.endedAt,
-              },
-            ],
-      };
-    });
   }
 
   function finishLatestAgentMessage(
@@ -439,7 +383,7 @@ export default function ChatPanel({
               {
                 id: "agent-response",
                 kind: "agent" as const,
-                agent: "infra_agent",
+                agent: "infra-analyzer",
                 model: INFRA_AGENT_MODEL,
                 status,
                 summary:
@@ -560,7 +504,6 @@ export default function ChatPanel({
             return msgs;
           });
         } else if (evt.type === "tool_result") {
-          onDeploymentComplete();
           onMessagesChange((prev: ChatMessage[]) => {
             const msgs = [...prev];
             const last = msgs[msgs.length - 1];
@@ -592,7 +535,7 @@ export default function ChatPanel({
             msgs[msgs.length - 1] = {
               ...last,
               plan,
-              plans: [...(last.plans ?? []), plan],
+              plans: [...(last.plans ?? []).filter((p) => p.planId !== plan.planId), plan],
             };
             return msgs;
           });
@@ -614,10 +557,6 @@ export default function ChatPanel({
           handleActivityStart(evt.data);
         } else if (evt.type === "activity_end") {
           handleActivityEnd(evt.data);
-        } else if (evt.type === "agent_call") {
-          handleAgentCall(evt.data);
-        } else if (evt.type === "agent_result") {
-          handleAgentResult(evt.data);
         } else if (evt.type === "usage") {
           onTokenUsage({
             input: evt.data.input_tokens,
@@ -656,10 +595,30 @@ export default function ChatPanel({
     handleSendText(input);
   }
 
-  function handlePlanApproved() {
+  function markPlanStatus(planId: string, next: Plan["status"]) {
+    onMessagesChange((prev) =>
+      prev.map((m) => {
+        const single = m.plan?.planId === planId ? { ...m.plan, status: next } : m.plan;
+        const list = m.plans?.map((p) => (p.planId === planId ? { ...p, status: next } : p));
+        return { ...m, plan: single, plans: list };
+      }),
+    );
+  }
+
+  const approvedPlanIdRef = useRef<string | null>(null);
+
+  function handlePlanApproved(planId?: string) {
+    if (planId) {
+      markPlanStatus(planId, "approved");
+      approvedPlanIdRef.current = planId;
+    }
     setTimeout(() => {
       handleResumeAfterApproval();
     }, 300);
+  }
+
+  function handlePlanRejected(planId?: string) {
+    if (planId) markPlanStatus(planId, "rejected");
   }
 
   function handleQuestionAnswered(questionId: string, answer: string) {
@@ -709,8 +668,6 @@ export default function ChatPanel({
       )) {
         if (evt.type === "activity_start") handleActivityStart(evt.data);
         else if (evt.type === "activity_end") handleActivityEnd(evt.data);
-        else if (evt.type === "agent_call") handleAgentCall(evt.data);
-        else if (evt.type === "agent_result") handleAgentResult(evt.data);
         else if (evt.type === "question") {
           appendQuestion({
             questionId: evt.data.question_id,
@@ -741,7 +698,7 @@ export default function ChatPanel({
             msgs[msgs.length - 1] = {
               ...last,
               plan,
-              plans: [...(last.plans ?? []), plan],
+              plans: [...(last.plans ?? []).filter((p) => p.planId !== plan.planId), plan],
             };
             return msgs;
           });
@@ -789,7 +746,6 @@ export default function ChatPanel({
             return msgs;
           });
         } else if (evt.type === "tool_result") {
-          onDeploymentComplete();
           onMessagesChange((prev) => {
             const msgs = [...prev];
             const last = msgs[msgs.length - 1];
@@ -820,7 +776,7 @@ export default function ChatPanel({
             msgs[msgs.length - 1] = {
               ...last,
               plan,
-              plans: [...(last.plans ?? []), plan],
+              plans: [...(last.plans ?? []).filter((p) => p.planId !== plan.planId), plan],
             };
             return msgs;
           });
@@ -839,10 +795,12 @@ export default function ChatPanel({
           });
         } else if (evt.type === "activity_start") handleActivityStart(evt.data);
         else if (evt.type === "activity_end") handleActivityEnd(evt.data);
-        else if (evt.type === "agent_call") handleAgentCall(evt.data);
-        else if (evt.type === "agent_result") handleAgentResult(evt.data);
         else if (evt.type === "reply") {
           finishLatestAgentMessage(evt.data.content);
+          if (approvedPlanIdRef.current) {
+            markPlanStatus(approvedPlanIdRef.current, "completed");
+            approvedPlanIdRef.current = null;
+          }
           onDeploymentComplete();
         } else if (evt.type === "usage")
           onTokenUsage({
@@ -866,8 +824,14 @@ export default function ChatPanel({
 
   const allActivities = useMemo(() => {
     const out: AgentActivityItem[] = [];
+    const seen = new Set<string>();
     for (const m of messages) {
-      if (m.activities) out.push(...m.activities);
+      if (!m.activities) continue;
+      for (const a of m.activities) {
+        if (seen.has(a.id)) continue;
+        seen.add(a.id);
+        out.push(a);
+      }
     }
     return out;
   }, [messages]);
@@ -922,8 +886,7 @@ export default function ChatPanel({
             {messages.length === 0 && (
               <div className="text-center text-[11px] text-slate-600 py-12">
                 <Sparkles size={16} className="mx-auto mb-2 text-cyan-500/60" />
-                Describe infrastructure or ask a question. Agent will inspect,
-                trace, group, then plan.
+                Describe infrastructure or ask a question.
               </div>
             )}
             {messages.map((msg, i) =>
@@ -936,7 +899,7 @@ export default function ChatPanel({
                   sessionId={sessionId}
                   onApproved={handlePlanApproved}
                   onQuestionAnswered={handleQuestionAnswered}
-                  onRejected={() => {}}
+                  onRejected={handlePlanRejected}
                 />
               ),
             )}
@@ -951,7 +914,7 @@ export default function ChatPanel({
                 plan={latestPlan}
                 sessionId={sessionId}
                 onApproved={handlePlanApproved}
-                onRejected={() => {}}
+                onRejected={handlePlanRejected}
               />
             ) : (
               <div className="text-center text-[11px] text-slate-600 py-12">

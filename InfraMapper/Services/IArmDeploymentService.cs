@@ -13,4 +13,6 @@ public interface IArmDeploymentService
         string? resourceGroupName,
         string deploymentName,
         CancellationToken cancellationToken = default);
+
+    Task<ArmWhatIfResult> WhatIfAsync(ArmDeploymentApplyInput input, CancellationToken cancellationToken = default);
 }

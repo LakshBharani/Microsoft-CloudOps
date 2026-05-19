@@ -140,10 +140,7 @@ public sealed class AgentService
         }
         else
         {
-            var agentMessage = validation.IsValid
-                ? BuildIntentAgentMessage(validation, request.SubscriptionId, sessionId)
-                : BuildAgentMessage(effectiveMessage, request.SubscriptionId, sessionId, compileError: null);
-            stream = _runner.RunStreamingAsync(agentMessage, sessionId, request.SubscriptionId, ct);
+            stream = _runner.RunStreamingAsync(effectiveMessage, sessionId, request.SubscriptionId, ct);
         }
 
         await foreach (var evt in translator.TranslateAsync(stream, ct))
@@ -329,72 +326,6 @@ public sealed class AgentService
 
         value = default;
         return false;
-    }
-
-    private string BuildAgentMessage(string rawMessage, string subscriptionId, string sessionId, string? compileError)
-    {
-        var validation = _intentValidator.Validate(rawMessage, subscriptionId);
-        var warningBlock = string.IsNullOrWhiteSpace(compileError) ? "" : $"\n\nServer warning: {compileError}";
-
-        if (!validation.IsValid)
-        {
-            return $"""
-                {ConversationStore.BuildSystemPrompt(subscriptionId, sessionId)}
-
-                User request:
-                {rawMessage}{warningBlock}
-                """;
-        }
-
-        return $"""
-            {ConversationStore.BuildSystemPrompt(subscriptionId, sessionId)}
-
-            User request:
-            {rawMessage}
-
-            {BuildIntentAgentMessage(validation, subscriptionId, sessionId)}
-            """;
-    }
-
-    internal static string BuildIntentAgentMessage(InfraIntentValidationResult validation) =>
-        BuildIntentAgentMessage(validation, validation.Spec?.Scope.SubscriptionId ?? "sub", "test-session");
-
-    internal static string BuildIntentAgentMessage(InfraIntentValidationResult validation, string subscriptionId, string sessionId)
-    {
-        var warnings = validation.Warnings.Count == 0
-            ? "None."
-            : string.Join("\n", validation.Warnings.Select(w => $"- {w}"));
-
-        return $"""
-            {ConversationStore.BuildSystemPrompt(subscriptionId, sessionId)}
-
-            Generate an Azure deployment plan for this InfraIntentSpec, then STOP and wait for user approval.
-            Use noCompute and studentSafe constraints exactly as written.
-            Prefer deploy_arm_template for multiple related resources.
-            Use create_or_update_resource only for simple single-resource CRUD.
-            Do not create resources outside the requested subscription, resource group, location, or component scope.
-            Generate ARM resource definitions dynamically with type, apiVersion, name, sku, kind, properties, dependsOn, and tags.
-            Workflow: inspect Azure first, then call create_plan (REQUIRED for any write/update/delete/deploy), then STOP. The user reviews the plan card and clicks Run plan. Only after the resume signal "execute approved plan" should you call write tools, then verify with get_deployment_status or list_resources. Never confirm via reply text — the plan card is the only approval surface.
-            Before planning resources in a resource group, call list_resource_groups; if the target resource group does not exist, include a "Create Microsoft.Resources/resourceGroups <name>" operation as step 1 of the plan and emit a subscription-scope ARM template that creates the resource group and a nested deployment for its child resources.
-            For ARM deployment plans, include template_json and parameters_json in create_plan, then pass the same template object to deploy_arm_template.
-            Never call create_plan with empty arguments. It requires a non-empty operations array, and ARM plans must include the same ARM template object you will pass to deploy_arm_template.
-            Never call deploy_arm_template without a template object containing at least contentVersion and resources.
-            If Azure validation/deployment returns an error, explain it and repair the ARM once or twice if possible.
-            You must finish with a normal assistant text response after tool calls complete. Do not return an empty final message.
-            Final response must include:
-            - plan title or deployment name
-            - resources created or updated
-            - verification tool used and result
-            - any Azure error if deployment or verification failed
-
-            Server pre-check warnings:
-            {warnings}
-
-            Normalized InfraIntentSpec:
-            ```json
-            {validation.NormalizedJson}
-            ```
-            """;
     }
 
     private static async IAsyncEnumerable<AgentStreamEvent> SingleError(string message)

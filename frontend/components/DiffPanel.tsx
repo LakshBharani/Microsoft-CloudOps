@@ -180,9 +180,9 @@ export default function DiffPanel({
     editorValue.trim().length > 0 && subscriptionId.trim().length > 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#161b27] text-slate-200">
-      <div className="sticky top-0 z-20 flex h-11 flex-shrink-0 items-center gap-2 border-b border-slate-700 bg-[#161b27] px-4">
-        <RefreshCw size={13} className="text-blue-400 flex-shrink-0" />
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0f1421] text-slate-200">
+      <div className="sticky top-0 z-20 flex h-11 flex-shrink-0 items-center gap-2 border-b border-slate-700 bg-[#0f1421] px-4">
+        <RefreshCw size={13} className="text-cyan-400 flex-shrink-0" />
         <span className="text-xs font-semibold text-slate-300 flex-1 truncate">
           Infrastructure Diff
         </span>
@@ -191,7 +191,7 @@ export default function DiffPanel({
           title={hasAdoConfig ? "DevOps connected" : "Connect Azure DevOps"}
           className={`flex-shrink-0 flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors ${
             hasAdoConfig
-              ? "border-blue-700 text-blue-400 hover:bg-blue-900/30"
+              ? "border-cyan-700 text-cyan-400 hover:bg-cyan-950/40"
               : "border-slate-600 text-slate-500 hover:text-slate-300"
           }`}
         >
@@ -230,7 +230,7 @@ export default function DiffPanel({
                 <button
                   onClick={handleLoadFromDevOps}
                   disabled={adoLoading}
-                  className="flex items-center gap-1.5 text-xs bg-blue-900/50 hover:bg-blue-900 border border-blue-700/50 text-blue-300 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 text-xs bg-cyan-950/40 hover:bg-cyan-900/40 border border-cyan-700/50 text-cyan-300 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
                 >
                   <CloudDownload size={12} />
                   Load from DevOps
@@ -238,7 +238,7 @@ export default function DiffPanel({
                 <button
                   onClick={handleSaveToDevOps}
                   disabled={adoLoading || !editorValue.trim()}
-                  className="flex items-center gap-1.5 text-xs bg-blue-900/50 hover:bg-blue-900 border border-blue-700/50 text-blue-300 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 text-xs bg-cyan-950/40 hover:bg-cyan-900/40 border border-cyan-700/50 text-cyan-300 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
                 >
                   <CloudUpload size={12} />
                   Save to DevOps
@@ -265,7 +265,7 @@ export default function DiffPanel({
               value={editorValue}
               onChange={(e) => setEditorValue(e.target.value)}
               placeholder={starterIntentJson(subscriptionId)}
-              className="min-h-[260px] flex-1 w-full bg-[#0f1117] border border-slate-700 rounded px-3 py-2 text-[11px] text-slate-300 font-mono resize-none outline-none focus:border-blue-500"
+              className="min-h-[260px] flex-1 w-full bg-[#0b1018] border border-slate-700 rounded px-3 py-2 text-[11px] text-slate-300 font-mono resize-none outline-none focus:border-cyan-500"
             />
           )}
         </div>
