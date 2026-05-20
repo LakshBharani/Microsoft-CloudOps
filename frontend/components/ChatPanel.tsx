@@ -83,6 +83,22 @@ function formatWorkedDuration(ms: number) {
   return `${minutes}m`;
 }
 
+function approvedPlanPrompt(plan: Plan) {
+  return [
+    "Execute approved plan. The user clicked Approve in the UI.",
+    "Use infra-builder-agent and execute the operations in chronological order.",
+    "For delete operations, chronological order means dependents first and parents or referenced resources last.",
+    "For create/update/deploy operations, generate the exact resource-level ARM template JSON required for that operation and pass it to the matching tool.",
+    "After each operation, call the matching verification tool.",
+    "Do not execute anything outside this approved plan.",
+    "",
+    "Approved plan JSON:",
+    "```json",
+    JSON.stringify(plan, null, 2),
+    "```",
+  ].join("\n");
+}
+
 function getWorkedDuration(msg: ChatMessage) {
   if (msg.isStreaming || !msg.activities || msg.activities.length === 0)
     return null;
@@ -101,6 +117,14 @@ function getWorkedDuration(msg: ChatMessage) {
   )
     return null;
   return formatWorkedDuration(endedAt - startedAt);
+}
+
+function waitForActivityPaint() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(resolve);
+    });
+  });
 }
 
 function DiffJsonNugget() {
@@ -580,6 +604,8 @@ export default function ChatPanel({
             planId: evt.data.plan_id,
             title: evt.data.title,
             operations: evt.data.operations,
+            resources: evt.data.resources,
+            dependencies: evt.data.dependencies,
             riskLevel: evt.data.risk_level as Plan["riskLevel"],
             estimatedCostNote: evt.data.estimated_cost_note,
             criticVerdict: evt.data.critic_verdict,
@@ -612,6 +638,7 @@ export default function ChatPanel({
           });
         } else if (evt.type === "activity_start") {
           handleActivityStart(evt.data);
+          await waitForActivityPaint();
         } else if (evt.type === "activity_end") {
           handleActivityEnd(evt.data);
         } else if (evt.type === "usage") {
@@ -662,9 +689,114 @@ export default function ChatPanel({
     );
   }
 
+  function findPlan(planId: string) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      const plans = msg.plans ?? (msg.plan ? [msg.plan] : []);
+      const match = plans.find((plan) => plan.planId === planId);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  async function executeApprovedPlan(plan: Plan) {
+    if (loading) return;
+
+    setLoading(true);
+    setActiveTab("chat");
+    onMessagesChange((prev) => [
+      ...collapsePreviousAgentRich(prev),
+      {
+        role: "agent",
+        content: "",
+        toolCalls: [],
+        isStreaming: true,
+        richCollapsed: false,
+      },
+    ]);
+
+    try {
+      for await (const evt of streamChat(
+        approvedPlanPrompt(plan),
+        subscriptionId,
+        sessionId,
+      )) {
+        if (evt.type === "tool_call") {
+          onSessionIdSet(evt.data.session_id);
+          onMessagesChange((prev: ChatMessage[]) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            msgs[msgs.length - 1] = {
+              ...last,
+              toolCalls: [
+                ...(last.toolCalls ?? []),
+                { tool: evt.data.tool, done: false },
+              ],
+            };
+            return msgs;
+          });
+        } else if (evt.type === "tool_result") {
+          onMessagesChange((prev: ChatMessage[]) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            msgs[msgs.length - 1] = {
+              ...last,
+              toolCalls: last.toolCalls?.map((tc) =>
+                tc.tool === evt.data.tool && !tc.done
+                  ? { ...tc, done: true, success: evt.data.success }
+                  : tc,
+              ),
+            };
+            return msgs;
+          });
+        } else if (evt.type === "activity_start") {
+          handleActivityStart(evt.data);
+          await waitForActivityPaint();
+        } else if (evt.type === "activity_end") {
+          handleActivityEnd(evt.data);
+        } else if (evt.type === "usage") {
+          onTokenUsage({
+            input: evt.data.input_tokens,
+            output: evt.data.output_tokens,
+          });
+        } else if (evt.type === "reply") {
+          onSessionIdSet(evt.data.session_id);
+          finishLatestAgentMessage(evt.data.content);
+          const lower = evt.data.content.toLowerCase();
+          const verificationMismatch = lower.includes("verification_status: mismatch");
+          const verificationSuccess = lower.includes("verification_status: success");
+          if (
+            !verificationMismatch &&
+            (
+              verificationSuccess ||
+              lower.includes("succeeded") ||
+              lower.includes("deployed") ||
+              lower.includes("created") ||
+              lower.includes("deleted") ||
+              lower.includes("completed")
+            )
+          ) {
+            markPlanStatus(plan.planId, "completed");
+            onDeploymentComplete();
+          }
+        } else if (evt.type === "error") {
+          finishLatestAgentMessage(`Error: ${evt.data.message}`, "failed");
+        }
+      }
+    } catch (err) {
+      finishLatestAgentMessage(`Error: ${(err as Error).message}`, "failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function handlePlanApproved(planId?: string) {
     if (planId) {
       markPlanStatus(planId, "approved");
+      const plan = findPlan(planId);
+      if (plan) {
+        void executeApprovedPlan({ ...plan, status: "approved" });
+      }
     }
   }
 
@@ -717,8 +849,10 @@ export default function ChatPanel({
         subscriptionId,
         sessionId,
       )) {
-        if (evt.type === "activity_start") handleActivityStart(evt.data);
-        else if (evt.type === "activity_end") handleActivityEnd(evt.data);
+        if (evt.type === "activity_start") {
+          handleActivityStart(evt.data);
+          await waitForActivityPaint();
+        } else if (evt.type === "activity_end") handleActivityEnd(evt.data);
         else if (evt.type === "question") {
           appendQuestion({
             questionId: evt.data.question_id,
@@ -737,6 +871,8 @@ export default function ChatPanel({
             planId: evt.data.plan_id,
             title: evt.data.title,
             operations: evt.data.operations,
+            resources: evt.data.resources,
+            dependencies: evt.data.dependencies,
             riskLevel: evt.data.risk_level as Plan["riskLevel"],
             estimatedCostNote: evt.data.estimated_cost_note,
             criticVerdict: evt.data.critic_verdict,

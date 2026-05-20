@@ -9,7 +9,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from app.constants import Constants
-from app.group_chats.cloudops_group_chat import ask_cloudops_group_chat
+from app.group_chats.cloudops_group_chat import (
+    ask_cloudops_group_chat,
+    reset_cloudops_group_chat,
+)
 from app.config import get_settings
 from app.azure_resources import get_infrastructure_nodes
 from app.devops import AzureDevOpsConfig, get_desired_state, push_desired_state
@@ -43,6 +46,11 @@ class QuestionAnswerRequest(BaseModel):
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await reset_cloudops_group_chat()
 
 
 @app.get("/config")
@@ -93,6 +101,8 @@ def _plan_event(plan: dict[str, Any] | None, session_id: str) -> dict[str, Any] 
             "plan_id": f"plan-{uuid.uuid4()}",
             "title": str(plan.get("title") or "Proposed Azure infrastructure plan"),
             "operations": plan.get("operations") or [],
+            "resources": plan.get("resources") or [],
+            "dependencies": str(plan.get("dependencies") or ""),
             "risk_level": str(plan.get("risk_level") or "Low"),
             "estimated_cost_note": plan.get("estimated_cost_note"),
             "critic_verdict": plan.get("critic_verdict"),
@@ -113,11 +123,24 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
 
         async def on_tool_event(tool: str, invocation_id: str, phase: str, success: bool | None) -> None:
             activity_id = f"tool-{invocation_id}"
+            builder_tools = {
+                "create_resource_group",
+                "deploy_resource",
+                "update_resource",
+                "rethink_deployment",
+                "delete_resource",
+                "delete_resource_group",
+                "verify_resource_exists",
+                "verify_resource_group_exists",
+            }
             tool_agent = (
+                Constants.INFRA_BUILDER_AGENT
+                if tool in builder_tools
+                else
                 Constants.INFRA_CRAWLER_AGENT
                 if tool.startswith("analyze_")
                 else Constants.INFRA_PLANNER_AGENT
-                if tool in {"infer_intent", "critic", "brainstorm", "propose_plan"}
+                if tool in {"infer_intent", "critic", "brainstorm", "propose_plan", "propose_delete_plan"}
                 else Constants.INFRA_READER_AGENT
             )
             if phase == "start":
@@ -136,6 +159,7 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                         },
                     }
                 )
+                await asyncio.sleep(0)
                 return
 
             await queue.put(
@@ -169,15 +193,17 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                             "kind": Constants.GROUP_CHAT_ACTIVITY_KIND,
                             "agent": None,
                             "status": "running",
-                            "summary": "Invoking cloudops group chat",
+                            "summary": "Agents cooking",
                             "session_id": session_id,
                         },
                     }
                 )
+                await asyncio.sleep(0)
                 result = await ask_cloudops_group_chat(
                     request.message,
                     subscription_id=subscription_id,
                     on_tool_event=on_tool_event,
+                    session_id=session_id,
                 )
                 await queue.put(
                     {
@@ -187,7 +213,7 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
                             "kind": Constants.GROUP_CHAT_ACTIVITY_KIND,
                             "agent": None,
                             "status": "success",
-                            "summary": "Invoking cloudops group chat done",
+                            "summary": "Agents cooking done",
                             "session_id": session_id,
                         },
                     }
@@ -225,7 +251,14 @@ async def agent_stream(request: AgentChatRequest) -> StreamingResponse:
         finally:
             await task
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/agent/plan/{plan_id}/approve")
@@ -240,7 +273,8 @@ async def reject_plan(plan_id: str) -> dict[str, str | bool]:
 
 @app.delete("/api/agent/session/{session_id}")
 async def reset_agent_session(session_id: str) -> dict[str, str | bool]:
-    return {"reset": True, "sessionId": session_id}
+    reset = await reset_cloudops_group_chat(session_id)
+    return {"reset": reset, "sessionId": session_id}
 
 
 @app.post("/api/agent/question/{question_id}/answer")

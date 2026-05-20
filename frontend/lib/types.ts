@@ -72,10 +72,20 @@ export interface PlanOperation {
   details?: string | Record<string, unknown>;
 }
 
+export interface PlanResource {
+  action?: "Create" | "Update" | "Delete" | "Deploy" | string;
+  resource_type?: string;
+  resource_name: string;
+  resource_group?: string;
+  note?: string;
+}
+
 export interface Plan {
   planId: string;
   title: string;
   operations: PlanOperation[];
+  resources?: PlanResource[];
+  dependencies?: string;
   riskLevel: "Low" | "Medium" | "High";
   estimatedCostNote?: string;
   revisionCount?: number;
@@ -149,7 +159,7 @@ export interface AgentChatResponse {
 export type AgentStreamEvent =
   | { type: "tool_call"; data: { tool: string; session_id: string } }
   | { type: "tool_result"; data: { tool: string; success: boolean; session_id: string } }
-  | { type: "plan"; data: { plan_id: string; title: string; operations: PlanOperation[]; risk_level: string; estimated_cost_note?: string; critic_verdict?: string; revision_count?: number; status?: Plan["status"]; session_id: string } }
+  | { type: "plan"; data: { plan_id: string; title: string; operations: PlanOperation[]; resources?: PlanResource[]; dependencies?: string; risk_level: string; estimated_cost_note?: string; critic_verdict?: string; revision_count?: number; status?: Plan["status"]; session_id: string } }
   | { type: "reply"; data: { content: string; session_id: string } }
   | { type: "usage"; data: { input_tokens: number; output_tokens: number; session_id: string } }
   | { type: "error"; data: { message: string; session_id: string } }

@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from contextvars import ContextVar
+from difflib import SequenceMatcher
 from typing import Annotated, Any, Awaitable, Callable
 
 from semantic_kernel.functions import kernel_function
@@ -72,6 +73,45 @@ def _find_resource_by_id(nodes: list[ResourceNode], resource_id: str) -> Resourc
     return next((node for node in nodes if _normalize(node.id) == normalized_id), None)
 
 
+def _resource_group_counts(nodes: list[ResourceNode]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for node in nodes:
+        if _is_resource_group(node):
+            counts.setdefault(_normalize(node.name), 0)
+        elif node.resourceGroup:
+            key = _normalize(node.resourceGroup)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _similar_resource_groups(
+    nodes: list[ResourceNode],
+    name: str | None,
+    min_score: float = 0.82,
+) -> list[dict[str, Any]]:
+    expected = _normalize(name)
+    if not expected:
+        return []
+
+    counts = _resource_group_counts(nodes)
+    suggestions: list[dict[str, Any]] = []
+    for node in nodes:
+        if not _is_resource_group(node):
+            continue
+        candidate = _normalize(node.name)
+        if candidate == expected:
+            continue
+        score = SequenceMatcher(None, expected, candidate).ratio()
+        if score >= min_score:
+            summary = _node_summary(node)
+            summary["resourceCount"] = counts.get(candidate, 0)
+            summary["similarity"] = round(score, 3)
+            suggestions.append(summary)
+
+    suggestions.sort(key=lambda item: (-item["similarity"], -item["resourceCount"], item["name"].lower()))
+    return suggestions[:5]
+
+
 def set_infra_reader_tool_event_handler(handler: ToolEventHandler | None) -> object:
     return _tool_event_handler.set(handler)
 
@@ -124,7 +164,12 @@ class InfraReaderPlugin:
                 if _is_resource_group(node) and _matches(node.name, name)
             ]
             await _emit_tool_event("find_resource_group", invocation_id, "end", True)
-            return _json({"name": name, "count": len(matches), "resourceGroups": matches})
+            return _json({
+                "name": name,
+                "count": len(matches),
+                "resourceGroups": matches,
+                "suggestedResourceGroups": [] if matches else _similar_resource_groups(nodes, name),
+            })
         except Exception:
             await _emit_tool_event("find_resource_group", invocation_id, "end", False)
             raise
@@ -146,7 +191,16 @@ class InfraReaderPlugin:
             ]
             resources.sort(key=lambda node: (node["resourceGroup"].lower(), node["type"].lower(), node["name"].lower()))
             await _emit_tool_event("list_resources", invocation_id, "end", True)
-            return _json({"resourceGroup": resource_group_name, "count": len(resources), "resources": resources})
+            return _json({
+                "resourceGroup": resource_group_name,
+                "count": len(resources),
+                "resources": resources,
+                "suggestedResourceGroups": (
+                    _similar_resource_groups(nodes, resource_group_name)
+                    if resource_group_name and not resources
+                    else []
+                ),
+            })
         except Exception:
             await _emit_tool_event("list_resources", invocation_id, "end", False)
             raise
@@ -225,6 +279,11 @@ class InfraReaderPlugin:
                     "resourceGroup": resource_group_name,
                     "found": resource_group is not None,
                     "properties": resource_group.properties if resource_group else None,
+                    "suggestedResourceGroups": (
+                        []
+                        if resource_group
+                        else _similar_resource_groups(nodes, resource_group_name)
+                    ),
                 }
             )
         except Exception:

@@ -116,6 +116,11 @@ export default function PlanCard({ plan, sessionId, onApproved, onRejected }: Pr
           {plan.criticVerdict}
         </div>
       )}
+      {plan.dependencies && (
+        <div className="border-t border-slate-800 px-3 py-1.5 text-[10px] leading-relaxed text-slate-500">
+          {plan.dependencies}
+        </div>
+      )}
       {plan.estimatedCostNote && (
         <div className="border-t border-slate-800 px-3 py-1.5 text-[10px] text-amber-400">
           {plan.estimatedCostNote}
