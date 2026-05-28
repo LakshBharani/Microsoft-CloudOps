@@ -120,9 +120,9 @@ function getWorkedDuration(msg: ChatMessage) {
 }
 
 function waitForActivityPaint() {
-  return new Promise<void>((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(resolve);
+  return new Promise<number>((resolve: (time: number) => void) => {
+    requestAnimationFrame((time) => {
+      resolve(time);
     });
   });
 }
@@ -233,7 +233,9 @@ function AgentMessage({
         <span className="font-semibold uppercase tracking-wider text-slate-300">
           InfraMapper
         </span>
-        <span className="text-slate-500">◇ {formatModelName(CLOUDOPS_AGENT_MODEL)}</span>
+        <span className="text-slate-500">
+          ◇ {formatModelName(CLOUDOPS_AGENT_MODEL)}
+        </span>
         {workedDuration && (
           <span className="ml-auto text-slate-500">{workedDuration}</span>
         )}
@@ -267,16 +269,22 @@ function AgentMessage({
           <div className="mt-2 text-xs leading-relaxed text-slate-200">
             <ReactMarkdown
               components={{
-                p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                p: ({ children }) => (
+                  <p className="mb-1 last:mb-0">{children}</p>
+                ),
                 ul: ({ children }) => (
-                  <ul className="mb-1 space-y-0.5 list-disc pl-4">{children}</ul>
+                  <ul className="mb-1 space-y-0.5 list-disc pl-4">
+                    {children}
+                  </ul>
                 ),
                 ol: ({ children }) => (
                   <ol className="list-decimal pl-4 mb-1">{children}</ol>
                 ),
                 li: ({ children }) => <li className="mb-0.5">{children}</li>,
                 strong: ({ children }) => (
-                  <strong className="text-white font-semibold">{children}</strong>
+                  <strong className="text-white font-semibold">
+                    {children}
+                  </strong>
                 ),
                 code: ({ children }) => (
                   <code className="bg-slate-900 px-1 rounded text-[10px] text-cyan-300 break-all">
@@ -299,7 +307,13 @@ function AgentMessage({
   );
 }
 
-function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void }) {
+function TabBar({
+  active,
+  onChange,
+}: {
+  active: Tab;
+  onChange: (t: Tab) => void;
+}) {
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "chat", label: "Chat", icon: <MessageSquare size={11} /> },
     { id: "plan", label: "Plan", icon: <ListChecks size={11} /> },
@@ -618,7 +632,10 @@ export default function ChatPanel({
             msgs[msgs.length - 1] = {
               ...last,
               plan,
-              plans: [...(last.plans ?? []).filter((p) => p.planId !== plan.planId), plan],
+              plans: [
+                ...(last.plans ?? []).filter((p) => p.planId !== plan.planId),
+                plan,
+              ],
             };
             return msgs;
           });
@@ -682,8 +699,11 @@ export default function ChatPanel({
   function markPlanStatus(planId: string, next: Plan["status"]) {
     onMessagesChange((prev) =>
       prev.map((m) => {
-        const single = m.plan?.planId === planId ? { ...m.plan, status: next } : m.plan;
-        const list = m.plans?.map((p) => (p.planId === planId ? { ...p, status: next } : p));
+        const single =
+          m.plan?.planId === planId ? { ...m.plan, status: next } : m.plan;
+        const list = m.plans?.map((p) =>
+          p.planId === planId ? { ...p, status: next } : p,
+        );
         return { ...m, plan: single, plans: list };
       }),
     );
@@ -763,18 +783,20 @@ export default function ChatPanel({
           onSessionIdSet(evt.data.session_id);
           finishLatestAgentMessage(evt.data.content);
           const lower = evt.data.content.toLowerCase();
-          const verificationMismatch = lower.includes("verification_status: mismatch");
-          const verificationSuccess = lower.includes("verification_status: success");
+          const verificationMismatch = lower.includes(
+            "verification_status: mismatch",
+          );
+          const verificationSuccess = lower.includes(
+            "verification_status: success",
+          );
           if (
             !verificationMismatch &&
-            (
-              verificationSuccess ||
+            (verificationSuccess ||
               lower.includes("succeeded") ||
               lower.includes("deployed") ||
               lower.includes("created") ||
               lower.includes("deleted") ||
-              lower.includes("completed")
-            )
+              lower.includes("completed"))
           ) {
             markPlanStatus(plan.planId, "completed");
             onDeploymentComplete();
@@ -885,11 +907,15 @@ export default function ChatPanel({
             msgs[msgs.length - 1] = {
               ...last,
               plan,
-              plans: [...(last.plans ?? []).filter((p) => p.planId !== plan.planId), plan],
+              plans: [
+                ...(last.plans ?? []).filter((p) => p.planId !== plan.planId),
+                plan,
+              ],
             };
             return msgs;
           });
-        } else if (evt.type === "reply") finishLatestAgentMessage(evt.data.content);
+        } else if (evt.type === "reply")
+          finishLatestAgentMessage(evt.data.content);
         else if (evt.type === "usage")
           onTokenUsage({
             input: evt.data.input_tokens,
@@ -931,7 +957,9 @@ export default function ChatPanel({
           <div className="flex h-6 w-6 items-center justify-center rounded bg-gradient-to-br from-cyan-400/30 to-cyan-600/30 border border-cyan-500/40">
             <Bot size={12} className="text-cyan-300" />
           </div>
-          <span className="text-xs font-semibold text-slate-200">InfraMapper</span>
+          <span className="text-xs font-semibold text-slate-200">
+            InfraMapper
+          </span>
           <button className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-300 hover:bg-slate-800">
             {formatModelName(CLOUDOPS_AGENT_MODEL)}
           </button>
@@ -1108,7 +1136,8 @@ export default function ChatPanel({
           </div>
         </div>
         <p className="mt-1.5 text-center text-[10px] text-slate-600">
-          Enter to send · Shift+Enter for newline · Click graph nodes to add context
+          Enter to send · Shift+Enter for newline · Click graph nodes to add
+          context
         </p>
       </div>
     </div>
