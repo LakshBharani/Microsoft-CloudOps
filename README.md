@@ -8,6 +8,13 @@ Chat with a team of specialized AI agents to inspect, plan, and deploy Azure res
 
 <!-- Upload your video here -->
 
+
+https://github.com/user-attachments/assets/fdb32ea8-f9be-4583-89be-6123a4cc5341
+
+
+
+
+
 ---
 
 ## What I Built
