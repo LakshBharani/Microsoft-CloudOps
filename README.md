@@ -1,4 +1,4 @@
-# InfraIQ
+# InfraMapper
 
 **AI agent system for managing Azure cloud infrastructure through natural language.**
 
